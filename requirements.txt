@@ -1,0 +1,28 @@
+# requirements.txt
+# Upbit 하이브리드 터틀 자동매매 — 필요한 라이브러리 목록
+#
+# 설치 방법:
+#   pip install -r requirements.txt
+
+# Upbit 공식 SDK (시세·주문)
+pyupbit
+
+# myUpbit.py 의존성 (SimpleEnDecrypt 암호화 복호화)
+cryptography
+
+# 시세 데이터 처리 (pyupbit 내부에서 사용)
+pandas
+numpy
+
+# 환경변수 .env 파일 읽기
+python-dotenv
+
+# HTTP 요청 (텔레그램 알림)
+requests
+
+# 시간대 처리 (KST 한국 표준시)
+pytz
+
+# Google Sheets 연동 (체결 원장 동기화)
+gspread
+oauth2client

@@ -1,0 +1,35 @@
+# API 키 및 비밀 설정 파일 (절대 커밋 금지)
+.env
+service_account.json
+
+# 런타임 생성 파일 (프로그램 실행 중 자동 생성)
+unheld_coin_record.json
+held_coin_record.json
+trade_ledger.json
+daily_snapshot.json
+mock_balances.json
+atr_cache.json
+
+# 파이썬 자동 생성 파일
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# 가상환경 폴더
+venv/
+.venv/
+env/
+
+# IDE 설정 파일
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS 시스템 파일
+.DS_Store
+
+# 로그 파일
+*.log

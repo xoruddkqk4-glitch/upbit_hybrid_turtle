@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip show:*)",
+      "Bash(git init:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(git rm:*)",
+      "Bash(wc -l /mnt/c/Users/user/Desktop/program_garden/ls_hybrid_turtle/*.py)",
+      "Bash(grep:*)",
+      "Bash(ls -lt .claude/plans/*.md)",
+      "Bash(GOOGLE_SERVICE_ACCOUNT_JSON=service_account.json python3 *)"
+    ]
+  }
+}
