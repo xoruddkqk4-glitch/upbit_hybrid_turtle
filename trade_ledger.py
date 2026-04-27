@@ -83,15 +83,15 @@ SHEET_HEADERS = [
 # 포트폴리오 추이 시트 열제목
 PORTFOLIO_HEADERS = [
     "기록시각(KST)",
-    "실현손익(원)",   # 당일 실현손익
-    "누적수익금(원)", # 누적 실현손익
     "총평가금액(원)",
     "코인평가액(원)",
     "예수금(원)",
     "매입금액(원)",
     "평가손익(원)",
-    "보유코인수",
-    "보유코인목록",
+    "실현손익(원)",   # 당일 실현손익
+    "보유종목수",
+    "보유종목목록",
+    "누적수익금(원)", # 누적 실현손익
 ]
 
 
@@ -526,15 +526,15 @@ def record_portfolio_snapshot(
         ts_kst = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
         _upsert_portfolio_row(ws, today_str, [
             ts_kst,
-            realized_pnl_daily,
-            cumulative_profit,
             total_value,
             coin_value,
             cash,
             purchase_amount,
             unrealized_pnl,
+            realized_pnl_daily,
             holdings_count,
             holdings_names,
+            cumulative_profit,
         ])
 
         # ④ 기록 성공 → daily_snapshot.json 에 오늘 날짜 저장 (중복 방지)
@@ -678,22 +678,23 @@ def _upsert_portfolio_direct(
         if intraday_minimal:
             _append_portfolio_intraday_row(ws, [
                 ts_kst,
+                "", "", "", "", "",  # 총평가금액~평가손익 (pos 2~6) 장중엔 빈칸
                 realized_pnl_daily,
+                "", "",              # 보유종목수, 보유종목목록 (pos 8~9) 장중엔 빈칸
                 cumulative_profit,
-                "", "", "", "", "", "", "",
             ])
         else:
             _upsert_portfolio_row(ws, today_str, [
                 ts_kst,
-                realized_pnl_daily,
-                cumulative_profit,
                 total_value,
                 coin_value,
                 cash,
                 purchase_amount,
                 unrealized_pnl,
+                realized_pnl_daily,
                 holdings_count,
                 holdings_names,
+                cumulative_profit,
             ])
 
     except ImportError:

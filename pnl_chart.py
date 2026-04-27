@@ -295,12 +295,12 @@ def _delete_chart_if_exists(spreadsheet, sheet_id: int, title: str):
 
 
 def embed_line_chart(spreadsheet, worksheet) -> bool:
-    """콤보 그래프(당일=막대, 누적=선)를 임베드한다. A:C 범위 자동 확장."""
+    """콤보 그래프(당일=파란 막대/좌축, 누적=빨간 선/우축)를 임베드한다."""
     sheet_id    = worksheet.id
     chart_title = _chart_title()
     subtitle    = "Upbit Hybrid Turtle · KRW 기준 (포트폴리오 추이 소스)"
 
-    # 요구사항 반영을 위해 같은 제목 차트가 있으면 삭제 후 재생성
+    # 같은 제목 차트가 있으면 삭제 후 재생성
     _delete_chart_if_exists(spreadsheet, sheet_id, chart_title)
 
     body = {
@@ -312,12 +312,13 @@ def embed_line_chart(spreadsheet, worksheet) -> bool:
                             "title":    chart_title,
                             "subtitle": subtitle,
                             "basicChart": {
-                                "chartType":   "COMBO",
-                                "legendPosition": "BOTTOM_LEGEND",
-                                "headerCount": 1,
+                                "chartType":      "COMBO",
+                                "legendPosition": "TOP_LEGEND",
+                                "headerCount":    1,
                                 "axis": [
                                     {"position": "BOTTOM_AXIS", "title": "날짜"},
-                                    {"position": "LEFT_AXIS",   "title": "실현 손익(원)"},
+                                    {"position": "LEFT_AXIS",   "title": "일별 실현손익(원)"},
+                                    {"position": "RIGHT_AXIS",  "title": "누적 실현손익(원)"},
                                 ],
                                 "domains": [{
                                     "domain": {
@@ -333,6 +334,7 @@ def embed_line_chart(spreadsheet, worksheet) -> bool:
                                 }],
                                 "series": [
                                     {
+                                        # 당일 실현손익 — 파란 막대, 왼쪽 Y축
                                         "series": {
                                             "sourceRange": {
                                                 "sources": [{
@@ -345,8 +347,14 @@ def embed_line_chart(spreadsheet, worksheet) -> bool:
                                         },
                                         "targetAxis": "LEFT_AXIS",
                                         "type": "COLUMN",
+                                        "color": {
+                                            "red":   0.44,
+                                            "green": 0.68,
+                                            "blue":  0.84,
+                                        },
                                     },
                                     {
+                                        # 누적 실현손익 — 빨간 선, 오른쪽 Y축
                                         "series": {
                                             "sourceRange": {
                                                 "sources": [{
@@ -357,8 +365,13 @@ def embed_line_chart(spreadsheet, worksheet) -> bool:
                                                 }]
                                             }
                                         },
-                                        "targetAxis": "LEFT_AXIS",
+                                        "targetAxis": "RIGHT_AXIS",
                                         "type": "LINE",
+                                        "color": {
+                                            "red":   0.84,
+                                            "green": 0.18,
+                                            "blue":  0.18,
+                                        },
                                     },
                                 ],
                             },
@@ -370,8 +383,8 @@ def embed_line_chart(spreadsheet, worksheet) -> bool:
                                     "rowIndex":    1,
                                     "columnIndex": 5,
                                 },
-                                "widthPixels":  640,
-                                "heightPixels": 380,
+                                "widthPixels":  800,
+                                "heightPixels": 480,
                             }
                         },
                     }
@@ -382,7 +395,7 @@ def embed_line_chart(spreadsheet, worksheet) -> bool:
 
     try:
         spreadsheet.batch_update(body)
-        print(f"[pnl_chart] '{chart_title}' 콤보 차트 임베드 완료 (당일=막대, 누적=선)")
+        print(f"[pnl_chart] '{chart_title}' 콤보 차트 임베드 완료 (당일=파란막대/좌축, 누적=빨간선/우축)")
         return True
     except Exception as e:
         print(f"[pnl_chart] 차트 임베드 오류(무시하고 계속): {e}")
