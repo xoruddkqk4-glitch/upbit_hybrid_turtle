@@ -2,18 +2,19 @@
 # 실현 손익 누적 차트 — Google Sheets 갱신 모듈
 #
 # 역할:
-#   '포트폴리오 추이' 시트에 일 1회 기록되는 '실현손익(원)' 열을 데이터 소스로 삼아
+#   '포트폴리오 추이' 시트의 '실현손익(원)'(당일) / '누적수익금(원)'(누적) 열을 소스로 삼아
 #   '손익차트' 워크시트에 [날짜 / 당일 실현손익 / 누적 실현손익]
 #   세 열을 쓰고, 콤보 그래프(막대+선)를 임베드한다.
 #
 # 데이터 소스:
 #   '포트폴리오 추이' 시트 (trade_ledger.record_portfolio_snapshot 이 하루 1회 기록)
 #   ├─ 기록시각(KST): "2026-04-21 09:40:00"
-#   ├─ 실현손익(원) : 해당 시점의 **누적** 실현손익 (업비트 API 미제공 → 원장 자체 계산)
+#   ├─ 실현손익(원) : 해당 시점의 **당일** 실현손익
+#   ├─ 누적수익금(원): 해당 시점의 누적 실현손익
 #
 # 실현손익 차트 계산:
-#   당일 실현손익 = 오늘 스냅샷 누적값 − 전일 스냅샷 누적값
-#   누적 실현손익 = 오늘 스냅샷 누적값 그대로
+#   당일 실현손익 = 실현손익(원) 열 값
+#   누적 실현손익 = 누적수익금(원) 열 값
 #
 # 특징:
 #   - 매도가 한 번도 없어서 실현손익이 0 원이더라도, 스냅샷이 기록되는 날마다
@@ -72,6 +73,7 @@ def _chart_title() -> str:
 # '포트폴리오 추이' 시트 열 이름 (trade_ledger.PORTFOLIO_HEADERS 와 일치해야 함)
 COL_TS_KST          = "기록시각(KST)"
 COL_REALIZED_PNL    = "실현손익(원)"
+COL_CUMULATIVE_PNL  = "누적수익금(원)"
 # ─────────────────────────────────────────
 # 1) Google Sheets 인증
 # ─────────────────────────────────────────
@@ -158,8 +160,7 @@ def _to_int(val) -> int:
 def build_series_from_portfolio(rows: list) -> list:
     """'포트폴리오 추이' 시트 행들에서 날짜별 실현손익 시계열을 만든다.
 
-    같은 날 여러 행이 있을 경우 가장 마지막 기록(누적값)을 그 날의 종가로 본다.
-    전일 대비 증감을 당일 실현손익으로 계산한다.
+    같은 날 여러 행이 있을 경우 가장 마지막 기록을 그 날의 종가로 본다.
 
     Args:
         rows: get_all_records 로 얻은 dict 리스트 (헤더 포함된 첫 행은 제외됨)
@@ -177,16 +178,21 @@ def build_series_from_portfolio(rows: list) -> list:
     if not rows:
         return []
 
-    daily_last = {}  # date -> {"cumulative": float}
+    daily_last = {}  # date -> {"daily": float, "cumulative": float}
 
     for r in rows:
         ts_kst = r.get(COL_TS_KST, "")
         date_str = _parse_date(ts_kst)
         if not date_str:
             continue
-        cumulative = _to_float(r.get(COL_REALIZED_PNL, 0))
+        daily_pnl = _to_float(r.get(COL_REALIZED_PNL, 0))
+        cumulative = _to_float(r.get(COL_CUMULATIVE_PNL, 0))
+        # 구버전 호환: 누적수익금 컬럼이 없으면 기존 실현손익(누적) 컬럼을 사용
+        if COL_CUMULATIVE_PNL not in r:
+            cumulative = _to_float(r.get(COL_REALIZED_PNL, 0))
         # 같은 날 여러 행이면 마지막 것으로 덮어쓴다
         daily_last[date_str] = {
+            "daily":      daily_pnl,
             "cumulative": cumulative,
             "ts_kst":     ts_kst,
         }
@@ -196,17 +202,15 @@ def build_series_from_portfolio(rows: list) -> list:
         return []
 
     series = []
-    prev_cumulative = 0.0
     for d in sorted_dates:
         cur = daily_last[d]
         cumulative = cur["cumulative"]
-        daily_pnl  = cumulative - prev_cumulative
+        daily_pnl  = cur["daily"]
         series.append({
             "date":           d,
             "daily_pnl":      round(daily_pnl, 2),
             "cumulative_pnl": round(cumulative, 2),
         })
-        prev_cumulative = cumulative
 
     return series
 

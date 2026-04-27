@@ -83,12 +83,13 @@ SHEET_HEADERS = [
 # 포트폴리오 추이 시트 열제목
 PORTFOLIO_HEADERS = [
     "기록시각(KST)",
+    "실현손익(원)",   # 당일 실현손익
+    "누적수익금(원)", # 누적 실현손익
     "총평가금액(원)",
     "코인평가액(원)",
     "예수금(원)",
     "매입금액(원)",
     "평가손익(원)",
-    "실현손익(원)",   # 누적 실현손익 — 손익차트 시트도 이 컬럼을 데이터 소스로 사용
     "보유코인수",
     "보유코인목록",
 ]
@@ -376,6 +377,38 @@ def calc_realized_pnl_total() -> int:
     return int(round(total))
 
 
+def calc_realized_pnl_today() -> int:
+    """체결 원장 기준 당일 실현손익(원) 을 계산해 반환한다."""
+    if not os.path.exists(LEDGER_FILE):
+        return 0
+    try:
+        with open(LEDGER_FILE, "r", encoding="utf-8") as f:
+            rows = json.load(f)
+        if not isinstance(rows, list):
+            return 0
+    except (json.JSONDecodeError, IOError):
+        return 0
+
+    today_str = datetime.now(KST).strftime("%Y-%m-%d")
+    total = 0.0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        ts = str(row.get("ts_kst", ""))
+        if not ts.startswith(today_str):
+            continue
+        side = str(row.get("side", "")).upper()
+        if side != "SELL":
+            continue
+        try:
+            pa = row.get("profit_amount", "")
+            if isinstance(pa, (int, float)):
+                total += float(pa)
+        except Exception:
+            continue
+    return int(round(total))
+
+
 def _load_daily_snapshot() -> dict:
     """daily_snapshot.json 을 읽어 반환한다."""
     if os.path.exists(DAILY_SNAPSHOT_FILE):
@@ -420,13 +453,20 @@ def _upsert_portfolio_row(ws, today_str: str, row_values: list):
         print(f"[원장] 포트폴리오 추이 {today_str} 행 신규 추가")
 
 
+def _append_portfolio_intraday_row(ws, row_values: list):
+    """장중 경량 행(기록시각/실현손익/누적수익금 중심)을 append 한다."""
+    ws.append_row(row_values)
+    print("[원장] 포트폴리오 추이 장중 경량 행 추가")
+
+
 def record_portfolio_snapshot(
     total_value: int,
     coin_value: int = 0,
     cash: int = 0,
     purchase_amount: int = 0,
     unrealized_pnl: int = 0,
-    realized_pnl: int = 0,
+    realized_pnl_daily: int = 0,
+    cumulative_profit: int = 0,
     holdings_count: int = 0,
     holdings_names: str = "",
     initial_capital: int = 0,
@@ -486,12 +526,13 @@ def record_portfolio_snapshot(
         ts_kst = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
         _upsert_portfolio_row(ws, today_str, [
             ts_kst,
+            realized_pnl_daily,
+            cumulative_profit,
             total_value,
             coin_value,
             cash,
             purchase_amount,
             unrealized_pnl,
-            realized_pnl,
             holdings_count,
             holdings_names,
         ])
@@ -501,7 +542,7 @@ def record_portfolio_snapshot(
 
         print(f"[원장] 포트폴리오 추이 기록 완료 "
               f"— 총평가금액: {total_value:,}원, 보유코인: {holdings_count}개, "
-              f"실현손익: {realized_pnl:+,}원")
+              f"당일 실현손익: {realized_pnl_daily:+,}원, 누적수익금: {cumulative_profit:+,}원")
 
         # 텔레그램 알림 발송
         tg_names = f"\n보유코인: {holdings_names}" if holdings_names else "\n보유코인: 없음"
@@ -511,7 +552,8 @@ def record_portfolio_snapshot(
             f"코인평가액: {coin_value:,}원\n"
             f"예수금: {cash:,}원\n"
             f"평가손익: {unrealized_pnl:+,}원\n"
-            f"실현손익: {realized_pnl:+,}원\n"
+            f"당일 실현손익: {realized_pnl_daily:+,}원\n"
+            f"누적수익금: {cumulative_profit:+,}원\n"
             f"보유코인수: {holdings_count}개"
             f"{tg_names}\n"
             f"기록시각: {ts_kst}"
@@ -543,25 +585,28 @@ def refresh_sheets_after_sell():
             print("[원장] 포트폴리오 조회 실패 → 즉시 갱신 스킵")
             return
 
-        # ② 원장에서 누적 실현손익 재계산
-        realized_pnl = calc_realized_pnl_total()
+        # ② 원장에서 실현손익 재계산 (당일/누적)
+        realized_pnl_daily = calc_realized_pnl_today()
+        cumulative_profit = calc_realized_pnl_total()
 
         try:
             initial_capital = int(os.getenv("UPBIT_INITIAL_CAPITAL", "0") or 0)
         except ValueError:
             initial_capital = 0
 
-        # ③ '포트폴리오 추이' 시트 upsert (daily_snapshot.json 갱신 없이)
+        # ③ '포트폴리오 추이' 시트 장중 경량 행 append
         _upsert_portfolio_direct(
             total_value     = summary.get("total_capital",   0),
             coin_value      = summary.get("coin_value",      0),
             cash            = summary.get("cash",            0),
             purchase_amount = summary.get("purchase_amount", 0),
             unrealized_pnl  = summary.get("unrealized_pnl",  0),
-            realized_pnl    = realized_pnl,
+            realized_pnl_daily = realized_pnl_daily,
+            cumulative_profit = cumulative_profit,
             holdings_count  = summary.get("holdings_count",  0),
             holdings_names  = summary.get("holdings_names", ""),
             initial_capital = initial_capital,
+            intraday_minimal = True,
         )
 
         # ④ '손익차트' 시트 갱신
@@ -578,10 +623,12 @@ def _upsert_portfolio_direct(
     cash: int = 0,
     purchase_amount: int = 0,
     unrealized_pnl: int = 0,
-    realized_pnl: int = 0,
+    realized_pnl_daily: int = 0,
+    cumulative_profit: int = 0,
     holdings_count: int = 0,
     holdings_names: str = "",
     initial_capital: int = 0,
+    intraday_minimal: bool = False,
 ):
     """'포트폴리오 추이' 시트에 upsert 만 수행한다.
 
@@ -628,17 +675,26 @@ def _upsert_portfolio_direct(
             ws.update("A1", [PORTFOLIO_HEADERS])
 
         ts_kst = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
-        _upsert_portfolio_row(ws, today_str, [
-            ts_kst,
-            total_value,
-            coin_value,
-            cash,
-            purchase_amount,
-            unrealized_pnl,
-            realized_pnl,
-            holdings_count,
-            holdings_names,
-        ])
+        if intraday_minimal:
+            _append_portfolio_intraday_row(ws, [
+                ts_kst,
+                realized_pnl_daily,
+                cumulative_profit,
+                "", "", "", "", "", "", "",
+            ])
+        else:
+            _upsert_portfolio_row(ws, today_str, [
+                ts_kst,
+                realized_pnl_daily,
+                cumulative_profit,
+                total_value,
+                coin_value,
+                cash,
+                purchase_amount,
+                unrealized_pnl,
+                holdings_count,
+                holdings_names,
+            ])
 
     except ImportError:
         print("[원장] gspread 미설치 → 즉시 갱신 스킵")

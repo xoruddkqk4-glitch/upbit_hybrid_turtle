@@ -152,7 +152,8 @@ def main():
     try:
         summary = upbit_client.get_portfolio_summary()
         if summary:
-            realized_pnl = trade_ledger.calc_realized_pnl_total()
+            realized_pnl_daily = trade_ledger.calc_realized_pnl_today()
+            cumulative_profit = trade_ledger.calc_realized_pnl_total()
 
             try:
                 initial_capital = int(os.getenv("UPBIT_INITIAL_CAPITAL", "0") or 0)
@@ -165,7 +166,8 @@ def main():
                 cash            = summary.get("cash",            0),
                 purchase_amount = summary.get("purchase_amount", 0),
                 unrealized_pnl  = summary.get("unrealized_pnl",  0),
-                realized_pnl    = realized_pnl,
+                realized_pnl_daily = realized_pnl_daily,
+                cumulative_profit = cumulative_profit,
                 holdings_count  = summary.get("holdings_count",  0),
                 holdings_names  = summary.get("holdings_names", ""),
                 initial_capital = initial_capital,
