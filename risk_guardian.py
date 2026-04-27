@@ -17,6 +17,7 @@
 #       ② 5MA 하향 돌파 (수익권일 때만) → 익절 청산
 
 import time
+from typing import Optional
 
 import indicator_calc
 import telegram_alert
@@ -194,15 +195,16 @@ def place_exit_order(ticker: str, volume: float, reason: str, current_price: flo
 # 메인 실행 함수
 # ─────────────────────────────────────────
 
-def run_guardian():
+def run_guardian(balance: Optional[list] = None, indicators_map: Optional[dict] = None):
     """전체 보유 코인의 손절·익절 조건을 감시하고 청산을 실행한다."""
     print("[risk_guardian] 손절·익절 감시 시작")
 
-    try:
-        balance = upbit_client.get_balance()
-    except Exception as e:
-        print(f"[risk_guardian] 잔고 조회 오류: {e}")
-        return
+    if balance is None:
+        try:
+            balance = upbit_client.get_balance()
+        except Exception as e:
+            print(f"[risk_guardian] 잔고 조회 오류: {e}")
+            return
 
     if not balance:
         print("[risk_guardian] 보유 코인 없음")
@@ -240,8 +242,11 @@ def run_guardian():
 
         # ② 트레일링 스탑 확인
         try:
-            time.sleep(0.3)
-            indicators  = indicator_calc.get_all_indicators(ticker)
+            if indicators_map and ticker in indicators_map:
+                indicators = indicators_map[ticker]
+            else:
+                time.sleep(0.3)
+                indicators = indicator_calc.get_all_indicators(ticker)
             exit_reason = check_trailing_stop(ticker, current_price, pos, indicators)
             if exit_reason:
                 place_exit_order(ticker, sellable_qty, exit_reason, current_price)

@@ -26,9 +26,11 @@ import upbit_client
 # atr_cache.json 저장 경로 (이 파일과 같은 폴더)
 _DIR           = os.path.dirname(os.path.abspath(__file__))
 ATR_CACHE_FILE = os.path.join(_DIR, "atr_cache.json")
+MINUTE240_CACHE_FILE = os.path.join(_DIR, "minute240_cache.json")
 
 # KST 시간대 (날짜 판단 기준)
 _KST = pytz.timezone("Asia/Seoul")
+MINUTE240_TTL_MINUTES = 10
 
 
 def _load_atr_cache() -> dict:
@@ -59,6 +61,72 @@ def _save_atr_cache(cache: dict):
             json.dump(cache, f, ensure_ascii=False, indent=2)
     except IOError as e:
         print(f"[indicator] atr_cache.json 저장 오류: {e}")
+
+
+def _load_minute240_cache() -> dict:
+    """minute240_cache.json 을 읽어 반환한다.
+
+    구조:
+      {
+        "KRW-BTC": {
+          "updated_at": "2026-04-27 16:30:00",
+          "ma240_20": 9500000.0
+        }
+      }
+    """
+    if not os.path.exists(MINUTE240_CACHE_FILE):
+        return {}
+    try:
+        with open(MINUTE240_CACHE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except (json.JSONDecodeError, IOError):
+        print("[indicator] minute240_cache.json 읽기 오류 → 캐시 무시")
+    return {}
+
+
+def _save_minute240_cache(cache: dict):
+    """minute240_cache.json 을 저장한다."""
+    try:
+        with open(MINUTE240_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2)
+    except IOError as e:
+        print(f"[indicator] minute240_cache.json 저장 오류: {e}")
+
+
+def _get_ma240_20_with_ttl(ticker: str, ttl_minutes: int = MINUTE240_TTL_MINUTES) -> float:
+    """240분봉 20MA 를 TTL 캐시 우선으로 조회한다."""
+    now_kst = datetime.now(_KST)
+    cache = _load_minute240_cache()
+    cached = cache.get(ticker, {})
+
+    updated_at_str = cached.get("updated_at")
+    cached_ma = float(cached.get("ma240_20", 0.0) or 0.0)
+
+    if updated_at_str and cached_ma > 0:
+        try:
+            updated_at = _KST.localize(datetime.strptime(updated_at_str, "%Y-%m-%d %H:%M:%S"))
+            age_minutes = (now_kst - updated_at).total_seconds() / 60.0
+            if age_minutes <= ttl_minutes:
+                print(f"[indicator] {ticker} 240분봉 캐시 적중 "
+                      f"({age_minutes:.1f}분 경과, TTL {ttl_minutes}분)")
+                return cached_ma
+        except ValueError:
+            pass
+
+    minute_data = upbit_client.get_minute_chart(ticker, minute=240, count=25)
+    minute_close = [m["close"] for m in minute_data] if minute_data else []
+    ma240_20 = calc_ma(minute_close, period=20)
+
+    if ma240_20 > 0:
+        cache[ticker] = {
+            "updated_at": now_kst.strftime("%Y-%m-%d %H:%M:%S"),
+            "ma240_20": ma240_20,
+        }
+        _save_minute240_cache(cache)
+
+    return ma240_20
 
 
 def calc_atr(ohlcv_list: list, period: int = 20) -> float:
@@ -189,7 +257,10 @@ def get_all_indicators(ticker: str) -> dict:
         }
         데이터 부족 또는 오류 시 모든 값이 0 인 딕셔너리.
     """
-    default   = {"atr": 0.0, "ma5": 0.0, "ma20": 0.0, "day10_low": 0.0, "ma240_20": 0.0}
+    default   = {
+        "atr": 0.0, "ma5": 0.0, "ma20": 0.0, "day10_low": 0.0, "ma240_20": 0.0,
+        "s1_high": 0.0, "s2_high": 0.0,
+    }
     today_str = datetime.now(_KST).strftime("%Y-%m-%d")  # 캐시 유효 기준 날짜 (KST)
 
     try:
@@ -201,14 +272,14 @@ def get_all_indicators(ticker: str) -> dict:
         if cached.get("date") == today_str:
             # 캐시 적중: 일봉 API 건너뜀, 240분봉만 새로 가져옴
             print(f"[indicator] {ticker} 일봉 캐시 적중 ({today_str}) — 일봉 API 생략")
-            minute_data  = upbit_client.get_minute_chart(ticker, minute=240, count=25)
-            minute_close = [m["close"] for m in minute_data] if minute_data else []
             return {
                 "atr":       cached["atr"],
                 "ma5":       cached["ma5"],
                 "ma20":      cached["ma20"],
                 "day10_low": cached["day10_low"],
-                "ma240_20":  calc_ma(minute_close, period=20),
+                "ma240_20":  _get_ma240_20_with_ttl(ticker),
+                "s1_high":   float(cached.get("s1_high", 0.0)),
+                "s2_high":   float(cached.get("s2_high", 0.0)),
             }
 
         # ── 캐시 미스: 일봉 새로 계산 (저장은 run_daily.py 담당) ────────
@@ -230,17 +301,17 @@ def get_all_indicators(ticker: str) -> dict:
         ma5_val       = calc_ma(close_list, period=5)
         ma20_val      = calc_ma(close_list, period=20)
         day10_low_val = calc_10day_low(daily)
-
-        # 240분봉 25개 요청 (20MA 계산용)
-        minute_data  = upbit_client.get_minute_chart(ticker, minute=240, count=25)
-        minute_close = [m["close"] for m in minute_data] if minute_data else []
+        s1_high_val   = calc_n_day_high(daily, n=20)
+        s2_high_val   = calc_n_day_high(daily, n=55)
 
         return {
             "atr":       atr_val,
             "ma5":       ma5_val,
             "ma20":      ma20_val,
             "day10_low": day10_low_val,
-            "ma240_20":  calc_ma(minute_close, period=20),
+            "ma240_20":  _get_ma240_20_with_ttl(ticker),
+            "s1_high":   s1_high_val,
+            "s2_high":   s2_high_val,
         }
 
     except Exception as e:
@@ -278,6 +349,8 @@ def refresh_atr_cache(tickers: list):
                 "ma5":       calc_ma(close_list, period=5),
                 "ma20":      calc_ma(close_list, period=20),
                 "day10_low": calc_10day_low(daily),
+                "s1_high":   calc_n_day_high(daily, n=20),
+                "s2_high":   calc_n_day_high(daily, n=55),
             }
             print(f"[indicator] {ticker} ATR 캐시 갱신 완료 "
                   f"(ATR={cache[ticker]['atr']:,.0f})")
@@ -313,3 +386,30 @@ def get_n_day_high_signals(ticker: str) -> dict:
     except Exception as e:
         print(f"[indicator] {ticker} 신고가 계산 오류: {e}")
         return {"s1_high": 0.0, "s2_high": 0.0}
+
+
+def prefetch_indicators(tickers: list) -> dict:
+    """티커 목록의 지표를 일괄 계산해 반환한다.
+
+    run_all 에서 단계별 중복 API 호출을 줄이기 위한 프리페치 레이어.
+    내부적으로 get_all_indicators() 의 캐시(일봉/240분 TTL)를 그대로 활용한다.
+    """
+    result = {}
+    if not tickers:
+        return result
+
+    unique = list(dict.fromkeys([t for t in tickers if t]))
+    print(f"[indicator] 지표 프리페치 시작 — {len(unique)}개 티커")
+
+    for ticker in unique:
+        try:
+            result[ticker] = get_all_indicators(ticker)
+        except Exception as e:
+            print(f"[indicator] {ticker} 프리페치 오류: {e}")
+            result[ticker] = {
+                "atr": 0.0, "ma5": 0.0, "ma20": 0.0, "day10_low": 0.0,
+                "ma240_20": 0.0, "s1_high": 0.0, "s2_high": 0.0,
+            }
+
+    print("[indicator] 지표 프리페치 완료")
+    return result

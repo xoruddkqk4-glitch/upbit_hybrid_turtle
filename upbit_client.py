@@ -27,6 +27,11 @@ load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 # 모듈 내부에서 사용하는 Upbit 인스턴스
 _upbit = None
 
+# balances 초단기 캐시 (순간 중복 호출 완화용)
+_BALANCE_TTL_SECONDS = 3.0
+_balances_cache_data = []
+_balances_cache_ts = 0.0
+
 
 # ─────────────────────────────────────────
 # 로그인
@@ -254,18 +259,36 @@ def _sanitize_balances(raw) -> list:
     return [v for v in raw if isinstance(v, dict)]
 
 
-def _get_raw_balances() -> list:
+def invalidate_balance_cache():
+    """balances 메모리 캐시를 무효화한다."""
+    global _balances_cache_data, _balances_cache_ts
+    _balances_cache_data = []
+    _balances_cache_ts = 0.0
+
+
+def _get_raw_balances(force_refresh: bool = False) -> list:
     """pyupbit 원본 balances 리스트를 반환한다 (내부용).
 
     어떤 경로에서도 list[dict] 이외의 값은 반환하지 않는다.
     """
+    global _balances_cache_data, _balances_cache_ts
+
     _check_login()
     if _upbit is None:
         return []
+
+    now = time.monotonic()
+    if (not force_refresh and _balances_cache_data
+            and (now - _balances_cache_ts) <= _BALANCE_TTL_SECONDS):
+        return list(_balances_cache_data)
+
     try:
         time.sleep(0.1)
         raw = _upbit.get_balances()
-        return _sanitize_balances(raw)
+        clean = _sanitize_balances(raw)
+        _balances_cache_data = list(clean)
+        _balances_cache_ts = time.monotonic()
+        return clean
     except Exception as e:
         print(f"[upbit_client] 잔고 원본 조회 오류: {e}")
         return []
@@ -330,7 +353,9 @@ def get_balance() -> list:
     if not balances:
         return []
 
-    result = []
+    # 1차 패스: 보유 코인 기본 정보만 추출
+    holdings = []
+    tickers = []
     for v in balances:
         if not isinstance(v, dict):
             continue
@@ -352,26 +377,98 @@ def get_balance() -> list:
                 continue
 
             ticker = f"{unit}-{currency}"
-
-            # 현재가 조회 (1종목씩)
-            time.sleep(0.05)
-            try:
-                current_price = float(pyupbit.get_current_price(ticker) or 0.0)
-            except Exception:
-                current_price = 0.0
-
-            result.append({
+            holdings.append({
                 "ticker":        ticker,
                 "coin_name":     currency,
                 "volume":        qty,
                 "avg_price":     avg_buy_price,
-                "current_price": current_price,
                 "sellable_qty":  balance,   # locked(거래 대기) 제외한 매도 가능 수량
             })
+            tickers.append(ticker)
         except Exception as e:
             print(f"[upbit_client] 잔고 파싱 오류: {e}")
 
+    # 2차 패스: 현재가는 배치 조회 1회로 가져와 병합
+    price_map = get_multi_price(tickers)
+    result = []
+    for item in holdings:
+        t = item["ticker"]
+        merged = dict(item)
+        merged["current_price"] = float(price_map.get(t, 0.0))
+        result.append(merged)
+
     return result
+
+
+def get_account_snapshot() -> dict:
+    """계정 스냅샷(보유코인/KRW/총자본)을 한 번에 조회한다.
+
+    한 번의 balances 조회 결과를 재사용해 전략 단계 간 중복 호출을 줄인다.
+
+    Returns:
+        {
+            "balance": [get_balance() 와 동일 형식],
+            "krw_balance": float,   # 사용 가능 KRW (balance)
+            "total_capital": float, # KRW(balance+locked) + 코인 평가금액
+        }
+        조회 실패 시 {"balance": [], "krw_balance": 0.0, "total_capital": 0.0}
+    """
+    balances = _get_raw_balances()
+    if not balances:
+        return {"balance": [], "krw_balance": 0.0, "total_capital": 0.0}
+
+    krw_available = 0.0
+    krw_total = 0.0
+    holdings = []
+    tickers = []
+
+    for v in balances:
+        if not isinstance(v, dict):
+            continue
+        try:
+            currency = v.get("currency", "")
+            unit = v.get("unit_currency", "KRW")
+            balance = float(v.get("balance", 0))
+            locked = float(v.get("locked", 0))
+
+            if currency == "KRW":
+                krw_available = balance
+                krw_total = balance + locked
+                continue
+
+            avg_buy_price = float(v.get("avg_buy_price", 0))
+            qty = balance + locked
+            if avg_buy_price <= 0 or qty <= 0:
+                continue
+
+            ticker = f"{unit}-{currency}"
+            holdings.append({
+                "ticker": ticker,
+                "coin_name": currency,
+                "volume": qty,
+                "avg_price": avg_buy_price,
+                "sellable_qty": balance,
+            })
+            tickers.append(ticker)
+        except Exception:
+            continue
+
+    price_map = get_multi_price(tickers)
+    coin_value = 0.0
+    merged_balance = []
+    for item in holdings:
+        now_price = float(price_map.get(item["ticker"], 0.0))
+        merged = dict(item)
+        merged["current_price"] = now_price
+        merged_balance.append(merged)
+        coin_value += now_price * item["volume"]
+
+    total_capital = krw_total + coin_value
+    return {
+        "balance": merged_balance,
+        "krw_balance": float(krw_available),
+        "total_capital": float(total_capital),
+    }
 
 
 def get_portfolio_summary() -> dict:
@@ -410,6 +507,7 @@ def get_portfolio_summary() -> dict:
         coin_value      = 0.0
         names = []
         holdings_count = 0
+        holdings = []
 
         for v in balances:
             if not isinstance(v, dict):
@@ -426,24 +524,26 @@ def get_portfolio_summary() -> dict:
 
                 unit   = v.get("unit_currency", "KRW")
                 ticker = f"{unit}-{currency}"
-
-                time.sleep(0.05)
-                try:
-                    now_price = float(pyupbit.get_current_price(ticker) or 0.0)
-                except Exception:
-                    now_price = 0.0
-
                 purchase_amount += avg_buy_price * qty
-                coin_value      += now_price * qty
                 holdings_count  += 1
-
-                if avg_buy_price > 0 and now_price > 0:
-                    rate = (now_price - avg_buy_price) * 100.0 / avg_buy_price
-                    names.append(f"{currency}({rate:+.2f}%)")
-                else:
-                    names.append(currency)
+                holdings.append({
+                    "ticker": ticker,
+                    "currency": currency,
+                    "avg_buy_price": avg_buy_price,
+                    "qty": qty,
+                })
             except Exception:
                 pass
+
+        price_map = get_multi_price([h["ticker"] for h in holdings])
+        for h in holdings:
+            now_price = float(price_map.get(h["ticker"], 0.0))
+            coin_value += now_price * h["qty"]
+            if h["avg_buy_price"] > 0 and now_price > 0:
+                rate = (now_price - h["avg_buy_price"]) * 100.0 / h["avg_buy_price"]
+                names.append(f"{h['currency']}({rate:+.2f}%)")
+            else:
+                names.append(h["currency"])
 
         total_capital = cash + coin_value
         unrealized_pnl = coin_value - purchase_amount
@@ -462,6 +562,56 @@ def get_portfolio_summary() -> dict:
     except Exception as e:
         print(f"[upbit_client] 포트폴리오 요약 조회 오류: {e}")
         return {}
+
+
+# ─────────────────────────────────────────
+# 주문 체결 조회
+# ─────────────────────────────────────────
+
+def _get_execution_from_order(order_no: str, max_retries: int = 5, wait_sec: float = 0.6):
+    """주문 UUID로 실제 체결수량/체결가/수수료를 조회한다.
+
+    Returns:
+        (executed_volume, executed_price, paid_fee)
+    """
+    if not order_no or _upbit is None:
+        return (0.0, 0.0, 0.0)
+
+    for _ in range(max_retries):
+        try:
+            detail = _upbit.get_order(order_no)
+        except Exception:
+            detail = None
+
+        if isinstance(detail, dict):
+            executed_volume = float(detail.get("executed_volume", 0) or 0)
+            paid_fee = float(detail.get("paid_fee", 0) or 0)
+
+            # 평균 체결가: detail.price 우선, 없으면 trades 합산으로 계산
+            executed_price = float(detail.get("price", 0) or 0)
+            if executed_price <= 0:
+                trades = detail.get("trades", [])
+                if isinstance(trades, list) and trades:
+                    total_volume = 0.0
+                    total_funds = 0.0
+                    for tr in trades:
+                        if not isinstance(tr, dict):
+                            continue
+                        tr_vol = float(tr.get("volume", 0) or 0)
+                        tr_funds = float(tr.get("funds", 0) or 0)
+                        total_volume += tr_vol
+                        total_funds += tr_funds
+                    if total_volume > 0:
+                        executed_price = total_funds / total_volume
+                        if executed_volume <= 0:
+                            executed_volume = total_volume
+
+            if executed_volume > 0 and executed_price > 0:
+                return (executed_volume, executed_price, paid_fee)
+
+        time.sleep(wait_sec)
+
+    return (0.0, 0.0, 0.0)
 
 
 # ─────────────────────────────────────────
@@ -544,28 +694,23 @@ def place_order(ticker: str, volume: float, side: str,
             }
 
         order_no = resp.get("uuid", "")
-
-        # 체결가·체결수량은 주문 직후에는 빈 값일 수 있으므로 현재가로 근사
-        try:
-            exec_price = float(pyupbit.get_current_price(ticker) or 0.0)
-        except Exception:
-            exec_price = 0.0
-
-        if side == "BUY":
-            exec_vol = (krw_amount / exec_price) if exec_price > 0 else 0.0
-        else:
-            exec_vol = volume
-
-        # Upbit API 응답에 포함된 실제 납부 수수료 추출
-        paid_fee = float(resp.get("paid_fee", 0) or 0)
+        exec_vol, exec_price, paid_fee = _get_execution_from_order(order_no)
+        if exec_vol <= 0 or exec_price <= 0:
+            print(f"[upbit_client] 주문은 접수됐지만 체결 미확인 ({ticker} {side}, uuid={order_no})")
+            return {
+                "success": False, "order_no": order_no,
+                "message": "주문 접수 후 체결 미확인(시트/알림 기록 보류)",
+                "executed_volume": 0, "executed_price": 0, "paid_fee": 0.0,
+            }
 
         print(f"[upbit_client] 실계좌 {side} 주문 성공: "
               f"{ticker} 수량 {exec_vol:.8f} @{exec_price:,.0f}원 "
               f"수수료 {paid_fee:.2f}원 (uuid={order_no})")
+        invalidate_balance_cache()
         return {
             "success": True,
             "order_no": order_no,
-            "message": "주문 접수 완료",
+            "message": "실체결 확인 완료",
             "executed_volume": exec_vol,
             "executed_price": exec_price,
             "paid_fee": paid_fee,

@@ -28,6 +28,7 @@ import json
 import os
 import time
 from datetime import datetime
+from typing import Optional
 
 import pytz
 
@@ -134,7 +135,7 @@ def update_above_target_time(ticker: str, current_price: float, coin_record: dic
 # 메인 실행 함수
 # ─────────────────────────────────────────
 
-def run_update():
+def run_update(balance: Optional[list] = None, indicators_map: Optional[dict] = None):
     """미보유 코인 목표가 갱신 + 터틀 신호 체크 (메인 실행 함수).
 
     실행 순서:
@@ -150,7 +151,8 @@ def run_update():
 
     # ① 현재 보유 중인 코인 파악
     try:
-        balance    = upbit_client.get_balance()
+        if balance is None:
+            balance = upbit_client.get_balance()
         held_tickers = {item["ticker"] for item in balance}
     except Exception as e:
         print(f"[target_manager] 잔고 조회 오류: {e}")
@@ -176,21 +178,17 @@ def run_update():
                 print(f"[target_manager] {ticker} 현재가 조회 실패 → 스킵")
                 continue
 
-            # 지표 계산 (일봉 + 240분봉)
+            # 지표 계산 (일봉 캐시 + 240분봉)
             # API 속도 제한 방지를 위해 코인 간 약간 대기
-            time.sleep(0.3)
-            indicators = indicator_calc.get_all_indicators(ticker)
-
-            # 일봉 60개 직접 조회 (신고가 계산용)
-            time.sleep(0.3)
-            daily_60 = upbit_client.get_daily_chart(ticker, count=60)
-            if not daily_60:
-                print(f"[target_manager] {ticker} 일봉 데이터 없음 → 스킵")
-                continue
+            if indicators_map and ticker in indicators_map:
+                indicators = indicators_map[ticker]
+            else:
+                time.sleep(0.3)
+                indicators = indicator_calc.get_all_indicators(ticker)
 
             # 터틀 신호 계산
-            s1_high   = indicator_calc.calc_n_day_high(daily_60, n=20)
-            s2_high   = indicator_calc.calc_n_day_high(daily_60, n=55)
+            s1_high   = indicators.get("s1_high", 0.0)
+            s2_high   = indicators.get("s2_high", 0.0)
             turtle_s1 = s1_high > 0 and current_price > s1_high
             turtle_s2 = s2_high > 0 and current_price > s2_high
 

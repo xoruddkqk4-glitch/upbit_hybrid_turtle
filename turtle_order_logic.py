@@ -27,6 +27,7 @@
 import json
 import os
 import time
+from typing import Optional
 
 import indicator_calc
 import telegram_alert
@@ -430,7 +431,12 @@ def place_pyramid_order(ticker: str, volume: float, krw_amount: float,
 # 메인 실행 함수
 # ─────────────────────────────────────────
 
-def run_orders(entry_signals: list):
+def run_orders(
+    entry_signals: list,
+    total_capital: Optional[float] = None,
+    krw_balance: Optional[float] = None,
+    indicators_map: Optional[dict] = None,
+):
     """진입 신호 처리 + 기존 포지션 피라미딩 체크 (메인 실행 함수).
 
     Args:
@@ -440,11 +446,13 @@ def run_orders(entry_signals: list):
     print("[turtle] 주문 처리 시작")
 
     # ① 총 자본 조회
-    total_capital = upbit_client.get_total_capital()
+    if total_capital is None:
+        total_capital = upbit_client.get_total_capital()
     if total_capital <= 0:
         print("[turtle] 총자본이 0원 → 주문 중단")
         return
     print(f"[turtle] 총 자본: {total_capital:,.0f}원")
+    available_krw = upbit_client.get_krw_balance() if krw_balance is None else float(krw_balance)
 
     # ② 포지션 상태 불러오기
     position_state = load_position_state()
@@ -488,8 +496,11 @@ def run_orders(entry_signals: list):
             continue
 
         # 지표 계산 (API 속도 제한 방지 대기)
-        time.sleep(0.3)
-        indicators = indicator_calc.get_all_indicators(ticker)
+        if indicators_map and ticker in indicators_map:
+            indicators = indicators_map[ticker]
+        else:
+            time.sleep(0.3)
+            indicators = indicator_calc.get_all_indicators(ticker)
         atr_n      = indicators.get("atr", 0.0)
         if atr_n <= 0:
             print(f"[turtle] {ticker} ATR(N)=0 → 진입 불가")
@@ -513,16 +524,17 @@ def run_orders(entry_signals: list):
             continue
 
         # KRW 잔고가 부족하지 않은지 확인
-        krw_balance = upbit_client.get_krw_balance()
-        if krw_balance < krw_amount:
+        if available_krw < krw_amount:
             print(f"[turtle] {entry_name}({ticker}) KRW 잔고 부족 "
-                  f"({krw_balance:,.0f}원 < {krw_amount:,.0f}원) → 진입 스킵")
+                  f"({available_krw:,.0f}원 < {krw_amount:,.0f}원) → 진입 스킵")
             continue
 
         place_entry_order(
             ticker, volume, krw_amount, current_price, atr_n,
             max_unit, entry_source, entry_tier,
         )
+        # 같은 사이클 내 API 재조회 없이 가용 KRW를 로컬에서 차감 추적
+        available_krw -= krw_amount
 
     # ─────────────────────────────────────
     # [B] 기존 포지션 피라미딩 처리
@@ -548,8 +560,11 @@ def run_orders(entry_signals: list):
         if current_price < pos.get("next_pyramid_price", 0.0):
             continue
 
-        time.sleep(0.3)
-        indicators = indicator_calc.get_all_indicators(ticker)
+        if indicators_map and ticker in indicators_map:
+            indicators = indicators_map[ticker]
+        else:
+            time.sleep(0.3)
+            indicators = indicator_calc.get_all_indicators(ticker)
         atr_n      = indicators.get("atr", 0.0)
         if atr_n <= 0:
             continue
@@ -573,12 +588,12 @@ def run_orders(entry_signals: list):
                   f"{pyramid_name}({ticker}) 피라미딩 스킵 (현재 {current_total_units} Unit)")
             continue
 
-        krw_balance = upbit_client.get_krw_balance()
-        if krw_balance < krw_amount:
+        if available_krw < krw_amount:
             print(f"[turtle] {pyramid_name}({ticker}) KRW 잔고 부족 "
-                  f"({krw_balance:,.0f}원 < {krw_amount:,.0f}원) → 피라미딩 스킵")
+                  f"({available_krw:,.0f}원 < {krw_amount:,.0f}원) → 피라미딩 스킵")
             continue
 
         place_pyramid_order(ticker, volume, krw_amount, current_price, atr_n)
+        available_krw -= krw_amount
 
     print("[turtle] 주문 처리 완료")

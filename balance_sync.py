@@ -16,6 +16,7 @@
 
 import json
 import os
+from typing import Optional
 
 import indicator_calc
 import upbit_client
@@ -54,7 +55,7 @@ def _save_held_record(record: dict):
         print(f"[balance_sync] held_coin_record.json 저장 오류: {e}")
 
 
-def run_balance_sync() -> bool:
+def run_balance_sync(snapshot: Optional[dict] = None) -> bool:
     """실제 잔고와 held_coin_record.json 을 비교해서 불일치를 수정한다.
 
     Returns:
@@ -62,15 +63,21 @@ def run_balance_sync() -> bool:
         False — 잔고 조회 자체가 실패했을 때 (자동매매 중단 신호)
     """
     # ── 1. 실제 잔고 조회 ──────────────────────────────────────────────────
-    actual_list = upbit_client.get_balance()
+    actual_list = (snapshot or {}).get("balance")
+    if actual_list is None:
+        actual_list = upbit_client.get_balance()
 
     # get_balance() 가 빈 리스트를 반환하는 두 가지 경우:
     #   (a) API 오류 → 자동매매 중단 필요
     #   (b) 보유 코인이 진짜 없음 → 정상 (계속 진행)
     # 두 경우를 구분하기 위해 KRW 잔고 / 총자본으로 API 생존 여부를 판단한다.
     if not actual_list:
-        krw     = upbit_client.get_krw_balance()
-        capital = upbit_client.get_total_capital()
+        if snapshot:
+            krw = float(snapshot.get("krw_balance", 0.0))
+            capital = float(snapshot.get("total_capital", 0.0))
+        else:
+            krw = upbit_client.get_krw_balance()
+            capital = upbit_client.get_total_capital()
         if krw == 0.0 and capital == 0.0:
             print("[balance_sync] 잔고 조회 실패 (API 오류 의심) → False 반환")
             return False

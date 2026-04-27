@@ -3,14 +3,13 @@
 #
 # 역할:
 #   '포트폴리오 추이' 시트에 일 1회 기록되는 '실현손익(원)' 열을 데이터 소스로 삼아
-#   '손익차트' 워크시트에 [날짜 / 당일 실현손익 / 누적 실현손익 / 보유코인수]
-#   네 열을 쓰고, 최초 1회에 한해 선 그래프를 임베드한다.
+#   '손익차트' 워크시트에 [날짜 / 당일 실현손익 / 누적 실현손익]
+#   세 열을 쓰고, 콤보 그래프(막대+선)를 임베드한다.
 #
 # 데이터 소스:
 #   '포트폴리오 추이' 시트 (trade_ledger.record_portfolio_snapshot 이 하루 1회 기록)
 #   ├─ 기록시각(KST): "2026-04-21 09:40:00"
 #   ├─ 실현손익(원) : 해당 시점의 **누적** 실현손익 (업비트 API 미제공 → 원장 자체 계산)
-#   └─ 보유코인수   : 참고용
 #
 # 실현손익 차트 계산:
 #   당일 실현손익 = 오늘 스냅샷 누적값 − 전일 스냅샷 누적값
@@ -55,7 +54,7 @@ def _resolve_service_account_path() -> str:
 # 워크시트·차트 상수
 SOURCE_SHEET_NAME_REAL = "포트폴리오 추이"
 PNL_SHEET_NAME_REAL    = "손익차트"
-PNL_HEADERS            = ["날짜", "당일 실현손익(원)", "누적 실현손익(원)", "보유 코인 수"]
+PNL_HEADERS            = ["날짜", "당일 실현손익(원)", "누적 실현손익(원)"]
 CHART_TITLE_REAL       = "실현 손익 누적 차트"
 
 
@@ -73,9 +72,6 @@ def _chart_title() -> str:
 # '포트폴리오 추이' 시트 열 이름 (trade_ledger.PORTFOLIO_HEADERS 와 일치해야 함)
 COL_TS_KST          = "기록시각(KST)"
 COL_REALIZED_PNL    = "실현손익(원)"
-COL_HOLDINGS_COUNT  = "보유코인수"
-
-
 # ─────────────────────────────────────────
 # 1) Google Sheets 인증
 # ─────────────────────────────────────────
@@ -174,7 +170,6 @@ def build_series_from_portfolio(rows: list) -> list:
                 "date":           "2026-04-21",
                 "daily_pnl":      0.0,
                 "cumulative_pnl": 0.0,
-                "holdings_count": 2,
             },
             ...
         ]
@@ -182,7 +177,7 @@ def build_series_from_portfolio(rows: list) -> list:
     if not rows:
         return []
 
-    daily_last = {}  # date -> {"cumulative": float, "holdings": int}
+    daily_last = {}  # date -> {"cumulative": float}
 
     for r in rows:
         ts_kst = r.get(COL_TS_KST, "")
@@ -190,11 +185,9 @@ def build_series_from_portfolio(rows: list) -> list:
         if not date_str:
             continue
         cumulative = _to_float(r.get(COL_REALIZED_PNL, 0))
-        holdings   = _to_int(r.get(COL_HOLDINGS_COUNT, 0))
         # 같은 날 여러 행이면 마지막 것으로 덮어쓴다
         daily_last[date_str] = {
             "cumulative": cumulative,
-            "holdings":   holdings,
             "ts_kst":     ts_kst,
         }
 
@@ -212,7 +205,6 @@ def build_series_from_portfolio(rows: list) -> list:
             "date":           d,
             "daily_pnl":      round(daily_pnl, 2),
             "cumulative_pnl": round(cumulative, 2),
-            "holdings_count": cur["holdings"],
         })
         prev_cumulative = cumulative
 
@@ -240,7 +232,6 @@ def update_pnl_worksheet(series: list, spreadsheet) -> tuple:
             item["date"],
             item["daily_pnl"],
             item["cumulative_pnl"],
-            item["holdings_count"],
         ])
 
     try:
@@ -258,8 +249,8 @@ def update_pnl_worksheet(series: list, spreadsheet) -> tuple:
 # 4) 라인 차트 임베드 (최초 1회만)
 # ─────────────────────────────────────────
 
-def _chart_exists(spreadsheet, sheet_id: int, title: str) -> bool:
-    """주어진 워크시트 내부에 같은 제목의 차트가 이미 존재하는지 확인한다."""
+def _find_chart_id(spreadsheet, sheet_id: int, title: str):
+    """주어진 워크시트에서 제목이 일치하는 차트 ID를 찾는다."""
     try:
         meta = spreadsheet.fetch_sheet_metadata()
         for sheet in meta.get("sheets", []):
@@ -267,24 +258,46 @@ def _chart_exists(spreadsheet, sheet_id: int, title: str) -> bool:
             if props.get("sheetId") != sheet_id:
                 continue
             for ch in sheet.get("charts", []):
+                chart_id = ch.get("chartId")
                 spec = ch.get("spec", {})
                 if spec.get("title", "") == title:
-                    return True
-        return False
+                    return chart_id
+        return None
     except Exception as e:
-        print(f"[pnl_chart] 기존 차트 확인 실패(재생성 스킵): {e}")
-        return True
+        print(f"[pnl_chart] 기존 차트 확인 실패(재생성 시도): {e}")
+        return None
+
+
+def _delete_chart_if_exists(spreadsheet, sheet_id: int, title: str):
+    """같은 제목 차트가 있으면 삭제한다."""
+    chart_id = _find_chart_id(spreadsheet, sheet_id, title)
+    if not chart_id:
+        return
+
+    body = {
+        "requests": [
+            {
+                "deleteEmbeddedObject": {
+                    "objectId": chart_id
+                }
+            }
+        ]
+    }
+    try:
+        spreadsheet.batch_update(body)
+        print(f"[pnl_chart] 기존 '{title}' 차트 삭제 후 재생성")
+    except Exception as e:
+        print(f"[pnl_chart] 기존 차트 삭제 실패(무시하고 계속): {e}")
 
 
 def embed_line_chart(spreadsheet, worksheet) -> bool:
-    """선 그래프를 1회만 임베드한다. A:C 범위가 동적으로 자동 확장된다."""
+    """콤보 그래프(당일=막대, 누적=선)를 임베드한다. A:C 범위 자동 확장."""
     sheet_id    = worksheet.id
     chart_title = _chart_title()
     subtitle    = "Upbit Hybrid Turtle · KRW 기준 (포트폴리오 추이 소스)"
 
-    if _chart_exists(spreadsheet, sheet_id, chart_title):
-        print(f"[pnl_chart] '{chart_title}' 이미 존재 → 차트 재생성 스킵")
-        return False
+    # 요구사항 반영을 위해 같은 제목 차트가 있으면 삭제 후 재생성
+    _delete_chart_if_exists(spreadsheet, sheet_id, chart_title)
 
     body = {
         "requests": [
@@ -295,7 +308,7 @@ def embed_line_chart(spreadsheet, worksheet) -> bool:
                             "title":    chart_title,
                             "subtitle": subtitle,
                             "basicChart": {
-                                "chartType":   "LINE",
+                                "chartType":   "COMBO",
                                 "legendPosition": "BOTTOM_LEGEND",
                                 "headerCount": 1,
                                 "axis": [
@@ -327,6 +340,7 @@ def embed_line_chart(spreadsheet, worksheet) -> bool:
                                             }
                                         },
                                         "targetAxis": "LEFT_AXIS",
+                                        "type": "COLUMN",
                                     },
                                     {
                                         "series": {
@@ -340,6 +354,7 @@ def embed_line_chart(spreadsheet, worksheet) -> bool:
                                             }
                                         },
                                         "targetAxis": "LEFT_AXIS",
+                                        "type": "LINE",
                                     },
                                 ],
                             },
@@ -363,7 +378,7 @@ def embed_line_chart(spreadsheet, worksheet) -> bool:
 
     try:
         spreadsheet.batch_update(body)
-        print(f"[pnl_chart] '{chart_title}' 라인 차트 임베드 완료")
+        print(f"[pnl_chart] '{chart_title}' 콤보 차트 임베드 완료 (당일=막대, 누적=선)")
         return True
     except Exception as e:
         print(f"[pnl_chart] 차트 임베드 오류(무시하고 계속): {e}")

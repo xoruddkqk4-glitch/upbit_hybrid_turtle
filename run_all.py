@@ -31,11 +31,13 @@ from datetime import datetime
 import pytz
 
 import balance_sync
+import indicator_calc
 import risk_guardian
 import target_manager
 import timer_agent
 import turtle_order_logic
 import upbit_client
+from config import get_watchlist
 from telegram_alert import SendMessage
 
 KST = pytz.timezone("Asia/Seoul")
@@ -130,12 +132,22 @@ def main():
     print(f"[run_all] 로그인 성공 (실계좌 모드) ✅")
     _step_done(t, "STEP 1: Upbit 로그인")
 
+    # 단계 간 중복 API 호출을 줄이기 위한 계정 스냅샷
+    t = _step_start("STEP 1-B: 계정 스냅샷")
+    snapshot = upbit_client.get_account_snapshot()
+    _step_done(t, "STEP 1-B: 계정 스냅샷")
+
+    # 단계 공용 지표 프리페치 (일봉 캐시 + 240분 TTL 캐시 활용)
+    t = _step_start("STEP 1-C: 지표 프리페치")
+    indicators_map = indicator_calc.prefetch_indicators(list(get_watchlist().keys()))
+    _step_done(t, "STEP 1-C: 지표 프리페치")
+
     # ─────────────────────────────────────
     # STEP 1-A: 잔고 동기화 (수동 매매 반영)
     # 실제 잔고와 기록이 다르면 손절·주문 계산이 틀어지므로 가장 먼저 정정한다.
     # ─────────────────────────────────────
     t = _step_start("STEP 1-A: 잔고 동기화")
-    sync_ok = balance_sync.run_balance_sync()
+    sync_ok = balance_sync.run_balance_sync(snapshot=snapshot)
     if not sync_ok:
         msg = "⚠️ [run_all] 잔고 조회 실패 → 자동매매 중단"
         print(msg)
@@ -148,7 +160,10 @@ def main():
     # ─────────────────────────────────────
     t = _step_start("STEP 2: 손절·익절 감시")
     try:
-        risk_guardian.run_guardian()
+        risk_guardian.run_guardian(
+            balance=snapshot.get("balance", []),
+            indicators_map=indicators_map,
+        )
     except Exception as e:
         msg = f"⚠️ [run_all] 손절·익절 감시 오류: {e}"
         print(msg)
@@ -156,12 +171,20 @@ def main():
         sys.exit(1)
     _step_done(t, "STEP 2: 손절·익절 감시")
 
+    # 손절/익절 체결 이후 상태 반영을 위해 스냅샷 1회 재조회
+    t = _step_start("STEP 2-B: 계정 스냅샷 갱신")
+    snapshot = upbit_client.get_account_snapshot()
+    _step_done(t, "STEP 2-B: 계정 스냅샷 갱신")
+
     # ─────────────────────────────────────
     # STEP 3: 미보유 코인 목표가 갱신
     # ─────────────────────────────────────
     t = _step_start("STEP 3: 목표가 갱신")
     try:
-        target_manager.run_update()
+        target_manager.run_update(
+            balance=snapshot.get("balance", []),
+            indicators_map=indicators_map,
+        )
     except Exception as e:
         msg = f"⚠️ [run_all] 목표가 갱신 오류 (계속 진행): {e}"
         print(msg)
@@ -186,7 +209,12 @@ def main():
     # ─────────────────────────────────────
     t = _step_start("STEP 5: 주문 실행")
     try:
-        turtle_order_logic.run_orders(entry_signals)
+        turtle_order_logic.run_orders(
+            entry_signals,
+            total_capital=snapshot.get("total_capital", 0.0),
+            krw_balance=snapshot.get("krw_balance", 0.0),
+            indicators_map=indicators_map,
+        )
     except Exception as e:
         msg = f"⚠️ [run_all] 주문 실행 오류: {e}"
         print(msg)
