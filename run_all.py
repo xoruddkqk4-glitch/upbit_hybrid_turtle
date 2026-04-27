@@ -11,7 +11,7 @@
 #   1.   Upbit 로그인
 #   1-A. balance_sync — 실제 잔고 ↔ held_coin_record.json 동기화 (수동 매매 반영)
 #   2.   risk_guardian  — 기존 포지션 손절·익절 감시 (기존 자산 보호 최우선)
-#   3.   target_manager — 미보유 코인 목표가·30분 가드 타이머 갱신
+#   3.   target_manager — 미보유 코인 터틀 신호(S1/S2) 갱신
 #   4.   timer_agent    — 30분 가드 체크 (진입 신호 코인 목록 생성)
 #   5.   turtle_order_logic — 진입·피라미딩 주문 실행
 #
@@ -177,19 +177,19 @@ def main():
     _step_done(t, "STEP 2-B: 계정 스냅샷 갱신")
 
     # ─────────────────────────────────────
-    # STEP 3: 미보유 코인 목표가 갱신
+    # STEP 3: 미보유 코인 터틀 신호 갱신
     # ─────────────────────────────────────
-    t = _step_start("STEP 3: 목표가 갱신")
+    t = _step_start("STEP 3: 터틀 신호 갱신")
     try:
         target_manager.run_update(
             balance=snapshot.get("balance", []),
             indicators_map=indicators_map,
         )
     except Exception as e:
-        msg = f"⚠️ [run_all] 목표가 갱신 오류 (계속 진행): {e}"
+        msg = f"⚠️ [run_all] 터틀 신호 갱신 오류 (계속 진행): {e}"
         print(msg)
         SendMessage(msg)
-    _step_done(t, "STEP 3: 목표가 갱신")
+    _step_done(t, "STEP 3: 터틀 신호 갱신")
 
     # ─────────────────────────────────────
     # STEP 4: 30분 가드 체크 (진입 신호 파악)

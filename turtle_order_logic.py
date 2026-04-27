@@ -42,7 +42,7 @@ HELD_COIN_RECORD_FILE = os.path.join(_DIR, "held_coin_record.json")
 MIN_ORDER_KRW = 5000
 
 # 한 코인 당 최대 Unit (피라미딩 상한)
-MAX_UNIT_PER_COIN = 4
+MAX_UNIT_PER_COIN = 3
 
 # 포트폴리오 전체 Unit 상한 (모든 코인의 current_unit 합계)
 MAX_TOTAL_UNITS = 12

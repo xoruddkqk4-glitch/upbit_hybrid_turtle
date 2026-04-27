@@ -1,7 +1,7 @@
 # Upbit 하이브리드 터틀 자동매매
 
 Upbit Open API 기반 **암호화폐(KRW 마켓) 자동매매 시스템**.
-고전 터틀 트레이딩의 **자금관리 원칙**에 **동적 목표가 + 30분 가드** 진입 필터를 결합한 하이브리드 전략을 구현한다.
+고전 터틀 트레이딩의 **S1/S2 신고가 돌파 + 30분 가드** 진입 필터와 **자금관리 원칙**을 결합한 전략을 구현한다.
 
 > AWS EC2 같은 서버에서 `crontab` 으로 5~15분마다 `run_all.py` 를 1회씩 호출하는 **원샷 배치** 방식으로 동작한다.
 > 프로세스 내부에 `while True` 같은 상시 감시 루프는 두지 않는다.
@@ -12,10 +12,9 @@ Claude Code/Agent 로 작업할 때의 상세 규약은 [`CLAUDE.md`](CLAUDE.md)
 
 ## 핵심 특징
 
-- **이중 진입 필터**: `max(현재가 × 1.02, 240분봉 20MA × 1.005)` 돌파 후 **30분 연속 유지** 될 때만 진입
-- **터틀 오리지널 S1/S2 돌파**: 20일 / 55일 신고가 돌파 시 즉시 진입(보조 경로)
+- **터틀 S1/S2 + 30분 가드**: 20일(S1) 또는 55일(S2) 신고가 돌파 후 **30분 연속 유지** 시에만 진입
 - **리스크 균등화 수량**: `1 Unit = 총자본 × 2% / ATR(N)` → 코인별 리스크 동일화
-- **0.5N 피라미딩**: 마지막 매수가 대비 0.5N 상승 시마다 1 Unit 추가 (코인당 최대 4 Unit)
+- **0.5N 피라미딩**: 마지막 매수가 대비 0.5N 상승 시마다 1 Unit 추가 (코인당 최대 3 Unit)
 - **2N 하드 손절**: 마지막 매수가 - 2N 이하 하락 시 전량 즉시 매도
 - **트레일링 스탑**: 10일 신저가 경신 또는 (수익권에서의) 5MA 하향 돌파 시 청산
 - **포트폴리오 상한**: 전체 12 Unit 이내
@@ -98,7 +97,7 @@ LOVELY_COIN_LIST = {
 python run_all.py
 ```
 
-로그인 → 손절·익절 감시 → 목표가 갱신 → 30분 가드 체크 → 주문 순서대로 **1회** 실행하고 종료한다.
+로그인 → 손절·익절 감시 → 터틀 신호 갱신 → 30분 가드 체크 → 주문 순서대로 **1회** 실행하고 종료한다.
 
 ### 2) AWS EC2 배포 (권장)
 
@@ -226,25 +225,15 @@ python -c "import risk_guardian; risk_guardian.run_guardian()"
 
 ### 진입 (Entry)
 
-두 경로 중 하나만 만족하면 진입한다. 같은 코인이 여러 경로에 해당하면 **S2 > S1 > TARGET_30MIN** 순으로 하나만 선택한다.
+**터틀 S1 / S2 신고가 돌파 + 30분 가드 (`TURTLE_S1` / `TURTLE_S2`)**
 
-**A. 동적 목표가 + 30분 가드 (`TARGET_30MIN`)**
+두 조건을 **AND** 로 모두 만족해야 진입한다.
 
-```
-pending_target = max(
-    현재가 × 1.02,         # 단기 2% 돌파
-    240분봉 20MA × 1.005   # 중기 이평 안착
-)
-```
+1. 직전 20일(S1) 또는 55일(S2) 장중 고가를 현재가가 돌파 (`turtle_s1/s2_signal = True`)
+2. 해당 신호가 **30분 이상 연속 유지** (`turtle_s1/s2_since` 기준 경과 시간 확인)
 
-- 현재가가 `pending_target` 이상에서 **30분 연속 유지** 시 1차 Unit 매수
-- 중간에 이탈하면 타이머(`above_target_since`) 초기화
-- 가격이 `reference_price` 아래로 내려가면 목표가 하향 조정
-
-**B. 터틀 S1 / S2 신고가 돌파 (`TURTLE_S1` / `TURTLE_S2`)**
-
-- 직전 20일(S1) 또는 55일(S2) 장중 고가를 현재가가 돌파하면 **30분 가드 없이 즉시 진입**
-- 강한 추세 초입을 놓치지 않기 위한 보조 경로
+- 신호가 꺼지면 타이머(`_since`) 초기화 → 재돌파 시 30분 다시 카운트
+- S1·S2 동시 해당 시 S2 우선 (`TURTLE_S2 > TURTLE_S1`)
 
 ### 포지션 사이징 — 단계별 진입 구조
 
@@ -258,8 +247,8 @@ tier_ratio = 이론 1U 명목가 / 총자본
 
 | tier_ratio | 진입 단계 | 적용 수량 | max_unit | 코인당 최대 비중 |
 |---|---|---|---|---|
-| ≤ 10% | **NORMAL** | 이론 수량 그대로 | 4 | ≤ 40% |
-| 10% ~ 25% | **CAPPED** | 자본 10% 로 축소 | 4 | 40% |
+| ≤ 10% | **NORMAL** | 이론 수량 그대로 | 3 | ≤ 30% |
+| 10% ~ 25% | **CAPPED** | 자본 10% 로 축소 | 3 | 30% |
 | 25% ~ 50% | **EXCEPTION** | 자본 10% 로 축소 | 2 | 20% |
 | > 50% | **SKIP** | — | — | 진입 불가 |
 
@@ -280,7 +269,7 @@ tier_ratio = 이론 1U 명목가 / 총자본
 ### 피라미딩
 
 - **0.5N 상승 시마다 1 Unit 추가**
-- **코인당 최대 4 Unit**, **포트폴리오 전체 12 Unit** 상한
+- **코인당 최대 3 Unit**, **포트폴리오 전체 12 Unit** 상한
 - 피라미딩 성공 시 손절가도 `새 체결가 - 2N` 으로 **트레일링 상승**
 
 ### 청산
@@ -308,8 +297,8 @@ run_all.py (crontab 이 주기적으로 호출)
 │   ├── balance_sync.py      — 실행 시작 시 실제 잔고 ↔ held_coin_record.json 동기화
 │   └── config.py            — LOVELY_COIN_LIST
 ├── [SA-MODULE-ENTRY] 진입 판정
-│   ├── target_manager.py    — 목표가 계산, unheld_coin_record.json 관리
-│   └── timer_agent.py       — 30분 가드 + 터틀 S1/S2 통합 신호 산출
+│   ├── target_manager.py    — 터틀 S1/S2 신호 감지, unheld_coin_record.json 관리
+│   └── timer_agent.py       — 터틀 신호 30분 가드 확인 + 진입 신호 산출
 └── [SA-MODULE-TRADE] 주문·리스크
     ├── turtle_order_logic.py — Unit 수량 계산, 진입·피라미딩 주문
     └── risk_guardian.py      — 2N 손절 + 트레일링 스탑 (1회 판정)
@@ -320,8 +309,8 @@ run_all.py (crontab 이 주기적으로 호출)
 1. **Upbit 로그인**
 2. **잔고 동기화** — 실제 잔고 ↔ `held_coin_record.json` 불일치 자동 정정
 3. **손절·익절 감시** — 기존 포지션 보호 (최우선)
-4. **목표가 갱신** — 미보유 코인의 `pending_target` / 터틀 신호 업데이트
-5. **30분 가드 체크** — 진입 신호 목록 생성
+4. **터틀 신호 갱신** — 미보유 코인의 S1/S2 신호 및 `_since` 타임스탬프 업데이트
+5. **30분 가드 체크** — 신호 유지 30분 이상 코인을 진입 신호 목록으로 생성
 6. **주문 실행** — 신규 진입 + 기존 포지션 피라미딩
 
 ---
@@ -338,7 +327,7 @@ run_all.py (crontab 이 주기적으로 호출)
 | `myUpbit.py` | pyupbit 저수준 유틸 |
 | `indicator_calc.py` | 기술지표 계산 |
 | `config.py` | 감시 코인 목록 |
-| `target_manager.py` | 동적 목표가 산출 |
+| `target_manager.py` | 터틀 S1/S2 신호 감지 및 상태 관리 |
 | `timer_agent.py` | 진입 신호 통합 |
 | `turtle_order_logic.py` | 주문·피라미딩 |
 | `risk_guardian.py` | 손절·익절 감시 |
@@ -354,7 +343,7 @@ run_all.py (crontab 이 주기적으로 호출)
 
 | 파일 | 내용 |
 |------|------|
-| `unheld_coin_record.json` | 미보유 코인의 `pending_target`, `reference_price`, `above_target_since`, 터틀 신호 |
+| `unheld_coin_record.json` | 미보유 코인의 터틀 신호(`turtle_s1/s2_signal`) 및 신호 발생 시각(`turtle_s1/s2_since`) |
 | `held_coin_record.json` | 보유 코인의 Unit 수·매수가·손절가·피라미딩 트리거가 |
 | `trade_ledger.json` | 누적 체결 원장 |
 | `daily_snapshot.json` | `run_daily.py` 의 하루 1회 스냅샷 중복 방지. 매도 즉시 갱신 경로는 건드리지 않음. |
@@ -367,7 +356,7 @@ run_all.py (crontab 이 주기적으로 호출)
 | 항목 | 규칙 | 근거 |
 |------|------|------|
 | **단일 트레이드 최대 손실** | 자본의 2% | `1 Unit = 총자본 × 1% / ATR`, 손절가 = 진입가 - 2N |
-| **코인당 최대 노출** | 4 Unit (≈ 자본의 8%) | `MAX_UNIT_PER_COIN` |
+| **코인당 최대 노출** | 3 Unit (≈ 자본의 6%) | `MAX_UNIT_PER_COIN` |
 | **포트폴리오 최대 노출** | 12 Unit (≈ 자본의 24%) | `MAX_TOTAL_UNITS` |
 | **감시·주문 범위** | `LOVELY_COIN_LIST` 만 | 리스트 외 티커는 무시 (단, 이미 보유 중이면 손절·익절 계속) |
 | **최소 주문 금액** | 5,000 원 | Upbit KRW 마켓 제한 |
