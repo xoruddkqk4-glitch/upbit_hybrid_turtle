@@ -10,14 +10,15 @@
 # held_coin_record.json 구조:
 # {
 #   "KRW-BTC": {
-#     "current_unit":      2,              ← 현재 몇 번 샀는지
-#     "last_buy_price":    95000000.0,     ← 가장 최근에 산 가격 (손절·피라미딩 기준)
-#     "avg_buy_price":     94500000.0,     ← 평균 매입 단가
-#     "stop_loss_price":   93000000.0,     ← 이 가격 이하로 내려오면 손절
-#     "next_pyramid_price": 95600000.0,    ← 이 가격 이상 오르면 추가 매수
-#     "max_unit":          4,              ← 최대 추가 매수 횟수
-#     "total_volume":      0.015,          ← 현재 보유 수량 합계 (코인 단위)
-#     "entry_source":      "ENTRY_30MIN"   ← 1차 진입 경로
+#     "current_unit":          2,             ← 현재 몇 번 샀는지
+#     "last_buy_price":        95000000.0,    ← 가장 최근에 산 가격 (손절·피라미딩 기준)
+#     "avg_buy_price":         94500000.0,    ← 평균 매입 단가
+#     "stop_loss_price":       93000000.0,    ← 이 가격 이하로 내려오면 손절
+#     "next_pyramid_price":    95600000.0,    ← 이 가격 이상 오르면 추가 매수
+#     "max_unit":              3,             ← 최대 추가 매수 횟수
+#     "total_volume":          0.015,         ← 현재 보유 수량 합계 (코인 단위)
+#     "entry_source":          "TURTLE_S1",  ← 1차 진입 경로
+#     "effective_risk_factor": 0.0082,        ← 실제 적용 리스크 계수 (상한 조정 시 0.01 미만)
 #   }
 # }
 #
@@ -53,26 +54,14 @@ MAX_TOTAL_UNITS = 12
 RISK_PER_TRADE = 0.01
 
 # ─────────────────────────────────────────
-# 단계별 진입 규칙 (LS 버전의 "일반 진입 / 예외 진입 / 스킵" 철학을 코인용으로 이식)
+# 1 Unit당 최대 매수 금액 상한
 # ─────────────────────────────────────────
 #
-# 기준값: "이론 1U 명목가" = capital × RISK_PER_TRADE / ATR × price  (ATR 공식 그대로의 원래 투자금)
-# 이 값이 자본에서 차지하는 비율에 따라 진입 유형을 결정한다.
-#
-#   tier_ratio ≤ NORMAL_TIER_PCT          → NORMAL    : 수량 그대로, max_unit = 4
-#   tier_ratio ≤ CAPPED_TIER_PCT          → CAPPED    : 1U 를 자본의 NORMAL_TIER_PCT 로 축소, max_unit = 4
-#   tier_ratio ≤ EXCEPTION_TIER_PCT       → EXCEPTION : 1U 를 자본의 NORMAL_TIER_PCT 로 축소, max_unit = 2
-#   tier_ratio >  EXCEPTION_TIER_PCT      → SKIP      : 진입 불가
-#
-# 자본이 충분히 커지면 자연스럽게 NORMAL 구간으로 진입한다(LS 의 일반 진입과 동일).
-# 자본이 작을 때는 변동성 낮은 코인(BTC 등)이 CAPPED/EXCEPTION 으로 분류되어
-# 수량이 자본의 NORMAL_TIER_PCT 수준으로 축소되고, 피라미딩도 제한된다.
+# 이론 1U 명목가(= capital × RISK_PER_TRADE / ATR × price) 가 상한을 초과하면
+# 해당 종목의 risk factor 를 낮춰 1U 명목가를 상한에 맞춘다.
+# 조정된 risk factor(effective_risk_factor) 는 종목별로 다르며 held_coin_record 에 저장된다.
 
-NORMAL_TIER_PCT    = 0.10   # 정상 구간: 이론 1U ≤ 자본 10%
-CAPPED_TIER_PCT    = 0.25   # CAPPED 경계: 자본 10~25% 는 축소(max_unit=4)
-EXCEPTION_TIER_PCT = 0.50   # EXCEPTION 경계: 25~50% 는 축소 + max_unit=2, 초과는 SKIP
-
-EXCEPTION_MAX_UNIT = 2      # EXCEPTION 진입 시 피라미딩 상한 (LS 와 동일)
+MAX_UNIT_KRW_RATIO = 0.10   # 1 Unit당 최대 매수 금액 = 총 자본 × 0.10
 
 
 # ─────────────────────────────────────────
@@ -111,26 +100,11 @@ def get_total_units(state: dict) -> int:
 # ─────────────────────────────────────────
 
 def calc_unit_size(ticker: str, price: float, atr_n: float, total_capital: float):
-    """리스크 기반 Unit 수량(코인 개수) 을 단계별 진입 규칙과 함께 계산한다.
+    """리스크 기반 Unit 수량(코인 개수)을 계산한다.
 
-    LS(국내주식) 버전의 "일반 진입 / 예외 진입 / 스킵" 철학을 코인용으로 이식한 4단계 분류.
-
-    1) 터틀 트레이딩 정석 공식:
-         1 Unit 수량 = (총 자본 × RISK_PER_TRADE) / ATR(N)   (기본 RISK_PER_TRADE = 1%)
-       이 코인이 ATR(N) 만큼 떨어질 때 총 자본의 딱 1% 만 손실 나도록 수량을 맞춘다.
-       손절가 = 진입가 − 2N 이므로 실제 2N 이탈 시 최대 손실 = 자본의 2%.
-
-    2) 단계별 진입 규칙 (이론 1U 명목가 = risk_volume × price 의 자본 대비 비율 기준):
-         NORMAL    (≤ NORMAL_TIER_PCT, 기본 10%)      → 수량 그대로,         max_unit = 4
-         CAPPED    (~ CAPPED_TIER_PCT, 기본 25%)     → 자본 10% 로 축소,    max_unit = 4
-         EXCEPTION (~ EXCEPTION_TIER_PCT, 기본 50%)  → 자본 10% 로 축소,    max_unit = 2
-         SKIP      (>  EXCEPTION_TIER_PCT)           → 진입 불가
-
-       CAPPED/EXCEPTION 에서는 수량을 줄이므로 실제 2N 이탈 시 손실이 2% 보다 작아진다(보수적).
-       EXCEPTION 은 변동성이 너무 낮은 "어찌 됐든 포지션이 과하게 커지는" 코인이므로
-       피라미딩도 2U 까지만 허용해 리스크가 누적되는 것을 방지한다.
-
-    3) 주문 금액(수량 × 현재가) 이 업비트 최소 주문 금액(5,000원) 미만이면 스킵.
+    이론 1U 명목가(= capital × RISK_PER_TRADE / ATR × price)가
+    1U 최대 금액(총 자본 × MAX_UNIT_KRW_RATIO)을 초과하면
+    해당 종목의 risk factor 를 낮춰 명목가를 상한에 맞춘다.
 
     Args:
         ticker:        업비트 티커 (로그용)
@@ -139,8 +113,9 @@ def calc_unit_size(ticker: str, price: float, atr_n: float, total_capital: float
         total_capital: 총 자본 (원)
 
     Returns:
-        (volume, krw_amount, max_unit, entry_tier) 튜플 또는 None (스킵).
-        entry_tier ∈ {"NORMAL", "CAPPED", "EXCEPTION"} — 호출자가 포지션 상태에 저장 가능.
+        (volume, krw_amount, effective_risk_factor) 튜플 또는 None (스킵).
+        effective_risk_factor: 실제 적용된 리스크 계수
+                               (상한 미초과 시 RISK_PER_TRADE, 초과 시 그보다 작은 값)
     """
     name = get_watchlist().get(ticker, {}).get("name", ticker)
 
@@ -156,54 +131,33 @@ def calc_unit_size(ticker: str, price: float, atr_n: float, total_capital: float
         print(f"[turtle] {name}({ticker}) 현재가 {price} → 수량 계산 불가, 스킵")
         return None
 
-    # ① 리스크 기반 원본 수량·명목가 (1% 손실 가정)
+    # ① 이론 1 Unit 수량·명목가 계산 (RISK_PER_TRADE = 1%)
     risk_volume = (total_capital * RISK_PER_TRADE) / atr_n
     if risk_volume <= 0:
         print(f"[turtle] {name}({ticker}) 계산 수량 0 (ATR={atr_n:,.0f}) → 스킵")
         return None
-    risk_krw   = risk_volume * price
-    tier_ratio = risk_krw / total_capital
+    risk_krw = risk_volume * price
 
-    # ② 단계 분류 (NORMAL / CAPPED / EXCEPTION / SKIP)
-    normal_cap_krw = total_capital * NORMAL_TIER_PCT
+    # ② 1 Unit 최대 매수 금액 상한 확인 및 effective_risk_factor 계산
+    max_unit_krw = total_capital * MAX_UNIT_KRW_RATIO
 
-    if tier_ratio <= NORMAL_TIER_PCT:
-        entry_tier = "NORMAL"
-        volume     = risk_volume
-        krw_amount = risk_krw
-        max_unit   = MAX_UNIT_PER_COIN
-        print(f"[turtle] {name}({ticker}) [NORMAL] 1U {risk_krw:,.0f}원 "
-              f"(자본 {tier_ratio*100:.1f}%) — 수량 {volume:.6f}, 최대 {max_unit}U")
-
-    elif tier_ratio <= CAPPED_TIER_PCT:
-        entry_tier  = "CAPPED"
-        volume      = normal_cap_krw / price
-        krw_amount  = normal_cap_krw
-        max_unit    = MAX_UNIT_PER_COIN
-        scale_ratio = normal_cap_krw / risk_krw
-        actual_2n   = RISK_PER_TRADE * scale_ratio * 2 * 100
-        print(f"[turtle] {name}({ticker}) [CAPPED] 이론 1U {risk_krw:,.0f}원 "
-              f"(자본 {tier_ratio*100:.1f}%) → 자본 {NORMAL_TIER_PCT*100:.0f}% "
-              f"({normal_cap_krw:,.0f}원) 로 축소, 최대 {max_unit}U "
-              f"| 2N 실제 손실 {actual_2n:.2f}%")
-
-    elif tier_ratio <= EXCEPTION_TIER_PCT:
-        entry_tier  = "EXCEPTION"
-        volume      = normal_cap_krw / price
-        krw_amount  = normal_cap_krw
-        max_unit    = EXCEPTION_MAX_UNIT
-        scale_ratio = normal_cap_krw / risk_krw
-        actual_2n   = RISK_PER_TRADE * scale_ratio * 2 * 100
-        print(f"[turtle] {name}({ticker}) [EXCEPTION] 이론 1U {risk_krw:,.0f}원 "
-              f"(자본 {tier_ratio*100:.1f}%) → 자본 {NORMAL_TIER_PCT*100:.0f}% "
-              f"({normal_cap_krw:,.0f}원) 로 축소, 피라미딩 {max_unit}U 로 제한 "
-              f"| 2N 실제 손실 {actual_2n:.2f}%")
-
+    if risk_krw <= max_unit_krw:
+        # 상한 미초과: 이론 수량 그대로 사용
+        volume         = risk_volume
+        krw_amount     = risk_krw
+        effective_risk = RISK_PER_TRADE
+        print(f"[turtle] {name}({ticker}) [정상] 1U {krw_amount:,.0f}원 "
+              f"(자본 {krw_amount/total_capital*100:.1f}%) — 수량 {volume:.6f}, "
+              f"리스크 {effective_risk*100:.2f}%")
     else:
-        print(f"[turtle] {name}({ticker}) [SKIP] 이론 1U {risk_krw:,.0f}원 "
-              f"(자본 {tier_ratio*100:.1f}%) > {EXCEPTION_TIER_PCT*100:.0f}% "
-              f"→ 변동성 너무 낮아 진입 불가")
-        return None
+        # 상한 초과: risk factor 를 낮춰 1U 금액을 max_unit_krw 에 맞춤
+        # effective_risk = MAX_UNIT_KRW_RATIO × ATR / price (역산 공식)
+        volume         = max_unit_krw / price
+        krw_amount     = max_unit_krw
+        effective_risk = MAX_UNIT_KRW_RATIO * atr_n / price
+        print(f"[turtle] {name}({ticker}) [상한 조정] 이론 1U {risk_krw:,.0f}원 "
+              f"(자본 {risk_krw/total_capital*100:.1f}%) → 자본 {MAX_UNIT_KRW_RATIO*100:.0f}% "
+              f"({krw_amount:,.0f}원) 로 축소 | 리스크 {effective_risk*100:.4f}%")
 
     # ③ 최소 주문 금액 체크
     if krw_amount < MIN_ORDER_KRW:
@@ -211,7 +165,7 @@ def calc_unit_size(ticker: str, price: float, atr_n: float, total_capital: float
               f"업비트 최소 {MIN_ORDER_KRW:,}원 → 스킵")
         return None
 
-    return (volume, krw_amount, max_unit, entry_tier)
+    return (volume, krw_amount, effective_risk)
 
 
 # ─────────────────────────────────────────
@@ -248,12 +202,13 @@ def check_pyramid_trigger(ticker: str, current_price: float, pos: dict) -> bool:
 def place_entry_order(
     ticker: str, volume: float, krw_amount: float,
     price: float, atr_n: float, max_unit: int,
-    entry_source: str = "TARGET_30MIN",
-    entry_tier:   str = "NORMAL",
+    entry_source:          str   = "TARGET_30MIN",
+    effective_risk_factor: float = RISK_PER_TRADE,
 ):
     """1차 진입 주문을 실행하고 포지션 상태를 기록한다.
 
-    entry_tier: "NORMAL" / "CAPPED" / "EXCEPTION" — calc_unit_size() 가 결정한 진입 단계.
+    effective_risk_factor: calc_unit_size() 가 계산한 실제 적용 리스크 계수.
+                           상한 미초과 시 RISK_PER_TRADE(0.01), 초과 시 그보다 작은 값.
     """
     watchlist = get_watchlist()
     if ticker not in watchlist:
@@ -286,15 +241,15 @@ def place_entry_order(
 
     position_state = load_position_state()
     position_state[ticker] = {
-        "current_unit":       1,
-        "last_buy_price":     executed_price,
-        "avg_buy_price":      executed_price,
-        "stop_loss_price":    stop_loss_price,
-        "next_pyramid_price": next_pyramid_price,
-        "max_unit":           max_unit,
-        "total_volume":       executed_volume,
-        "entry_source":       entry_source,
-        "entry_tier":         entry_tier,
+        "current_unit":          1,
+        "last_buy_price":        executed_price,
+        "avg_buy_price":         executed_price,
+        "stop_loss_price":       stop_loss_price,
+        "next_pyramid_price":    next_pyramid_price,
+        "max_unit":              max_unit,
+        "total_volume":          executed_volume,
+        "entry_source":          entry_source,
+        "effective_risk_factor": effective_risk_factor,
     }
     save_position_state(position_state)
 
@@ -306,11 +261,12 @@ def place_entry_order(
     }
     ledger_source = source_map.get(entry_source, "ENTRY_30MIN")
 
-    tier_label = {
-        "NORMAL":    "일반",
-        "CAPPED":    "축소",
-        "EXCEPTION": "예외(축소+2U 제한)",
-    }.get(entry_tier, entry_tier)
+    # 상한 조정 여부에 따라 표시 레이블 결정
+    risk_label = (
+        f"리스크 {effective_risk_factor*100:.2f}%"
+        if effective_risk_factor >= RISK_PER_TRADE
+        else f"리스크 {effective_risk_factor*100:.4f}% ↓상한조정"
+    )
 
     trade_ledger.append_trade({
         "side":        "BUY",
@@ -321,7 +277,7 @@ def place_entry_order(
         "order_no":    order_no,
         "order_type":  "MARKET",
         "source":      ledger_source,
-        "note":        f"1차 진입({tier_label}) | 손절가: {stop_loss_price:,.0f}원 | "
+        "note":        f"1차 진입({risk_label}) | 손절가: {stop_loss_price:,.0f}원 | "
                        f"다음 피라미딩: {next_pyramid_price:,.0f}원",
     })
 
@@ -332,7 +288,7 @@ def place_entry_order(
         "TARGET_30MIN": "목표가30분",
     }.get(entry_source, entry_source)
     telegram_alert.SendMessage(
-        f"✅ 터틀 진입 [{tier_label}]\n"
+        f"✅ 터틀 진입 [{risk_label}]\n"
         f"코인: {name}({ticker})\n"
         f"수량: {executed_volume:.8f}개 @{executed_price:,.0f}원\n"
         f"투입금액: {krw_amount:,.0f}원\n"
@@ -506,12 +462,12 @@ def run_orders(
             print(f"[turtle] {ticker} ATR(N)=0 → 진입 불가")
             continue
 
-        # Unit 수량 계산 (단계별 진입 규칙 포함)
+        # Unit 수량 계산 (상한 확인 + effective_risk_factor 산출)
         result = calc_unit_size(ticker, current_price, atr_n, total_capital)
         if result is None:
             continue
 
-        volume, krw_amount, max_unit, entry_tier = result
+        volume, krw_amount, effective_risk_factor = result
 
         # 포트폴리오 전체 Unit 한도 확인
         fresh_state         = load_position_state()
@@ -531,7 +487,7 @@ def run_orders(
 
         place_entry_order(
             ticker, volume, krw_amount, current_price, atr_n,
-            max_unit, entry_source, entry_tier,
+            MAX_UNIT_PER_COIN, entry_source, effective_risk_factor,
         )
         # 같은 사이클 내 API 재조회 없이 가용 KRW를 로컬에서 차감 추적
         available_krw -= krw_amount
@@ -576,7 +532,7 @@ def run_orders(
         if result is None:
             continue
 
-        volume, krw_amount, _, _ = result
+        volume, krw_amount, _ = result
 
         # 포트폴리오 전체 Unit 한도 재확인
         fresh_state         = load_position_state()

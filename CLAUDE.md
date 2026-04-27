@@ -126,24 +126,17 @@
 계좌의 변동성을 일정하게 관리하는 터틀 원칙을 적용한다.
 
 - **N(ATR) 계산**: 최근 **20일** True Range 평균, 매 실행마다 갱신.
-- **1 Unit 수량 결정** (터틀 정석 — 1% 리스크):
+- **1 Unit 수량 결정** (터틀 정석 — 1% 리스크 + 최대 금액 상한):
   ```
-  이론 1U 수량 = (총 자본 * 0.01) / ATR(N)
-  이론 1U 명목가 = 이론 1U 수량 * 현재가
-  tier_ratio = 이론 1U 명목가 / 총자본
+  이론 1U 수량  = (총 자본 × RISK_PER_TRADE) / ATR(N)
+  이론 1U 금액  = 이론 1U 수량 × 현재가
+  1U 최대 금액  = 총 자본 × MAX_UNIT_KRW_RATIO  (기본 10%)
   ```
-  손절가 = 진입가 - 2N 이므로 2N 이탈 시 최대 손실 = 자본의 2% (NORMAL 기준).
-  계수는 `turtle_order_logic.RISK_PER_TRADE` (기본 `0.01`) 에서 조정 가능.
-- **단계별 진입 규칙** (LS 버전의 일반/예외 진입 철학을 코인용으로 이식):
-  | tier_ratio | 단계 | 적용 수량 | max_unit |
-  |:---|:---|:---|:---|
-  | ≤ 10% | NORMAL | 이론 수량 그대로 | 3 |
-  | 10%~25% | CAPPED | 자본 10% 로 축소 | 3 |
-  | 25%~50% | EXCEPTION | 자본 10% 로 축소 | 2 |
-  | > 50% | SKIP | — | — |
-
-  관련 상수: `NORMAL_TIER_PCT`, `CAPPED_TIER_PCT`, `EXCEPTION_TIER_PCT`, `EXCEPTION_MAX_UNIT`.
-  `held_coin_record.json` 의 각 포지션에 `entry_tier` 필드가 저장되어 운영 중 추적 가능.
+  - 이론 1U 금액 ≤ 1U 최대 금액 → 이론 수량 그대로 매수, `effective_risk_factor = RISK_PER_TRADE`
+  - 이론 1U 금액 > 1U 최대 금액 → 1U 최대 금액으로 축소 매수,
+    `effective_risk_factor = MAX_UNIT_KRW_RATIO × ATR / 현재가` (역산, 0.01 미만)
+  - 종목마다 다른 `effective_risk_factor` 는 `held_coin_record.json` 에 저장.
+  - 관련 상수: `RISK_PER_TRADE` (기본 `0.01`), `MAX_UNIT_KRW_RATIO` (기본 `0.10`)
 - **최소 주문 금액 필터**: `수량 * 현재가 < 5,000원` 이면 해당 코인 주문 스킵 (Upbit KRW 마켓 최소 주문금액 제한).
 - **피라미딩(불타기)**:
   - 마지막 매수가 대비 **0.5N 상승** 시마다 1 Unit 추가.
@@ -268,4 +261,4 @@ python -c "import risk_guardian; risk_guardian.run_guardian()"
 
 ---
 
-> 마지막 업데이트: 2026-04-27 (매수 조건 개편 — 동적 목표가 전략 삭제, 터틀 S1/S2 + 30분 가드 AND 조건으로 단일화, 코인당 최대 Unit 4→3)
+> 마지막 업데이트: 2026-04-27 (매수 금액 상한 및 동적 리스크 계수 — NORMAL/CAPPED/EXCEPTION/SKIP 4단계 삭제, 1U 최대 금액 = 총자본×10% 상한 + 종목별 effective_risk_factor 저장으로 단순화)
