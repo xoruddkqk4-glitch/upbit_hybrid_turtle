@@ -11,7 +11,8 @@
       "Bash(wc -l /mnt/c/Users/user/Desktop/program_garden/ls_hybrid_turtle/*.py)",
       "Bash(grep:*)",
       "Bash(ls -lt .claude/plans/*.md)",
-      "Bash(GOOGLE_SERVICE_ACCOUNT_JSON=service_account.json python3 *)"
+      "Bash(GOOGLE_SERVICE_ACCOUNT_JSON=service_account.json python3 *)",
+      "Bash(git push *)"
     ]
   }
 }

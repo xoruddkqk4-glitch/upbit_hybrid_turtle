@@ -272,14 +272,17 @@ def append_trade(record: dict):
           f"@{price:,.0f}원 = {gross:,.0f}원 [{src}]")
 
     if sheets_ok:
+        # 수익률이 음수이면 손절, 그 외(양수·0·미기록)이면 익절로 표시
+        _pr_raw = record.get("profit_rate", "")
+        _exit_pfx = "손절" if isinstance(_pr_raw, (int, float)) and _pr_raw < 0 else "익절"
         source_kor = {
             "ENTRY_30MIN": "진입(목표가30분)",
             "ENTRY_S1":    "진입(20일신고가)",
             "ENTRY_S2":    "진입(55일신고가)",
             "PYRAMID":     "피라미딩",
             "EXIT_STOP":   "손절(2N하드)",
-            "EXIT_10LOW":  "익절(10일신저가)",
-            "EXIT_5MA":    "익절(5MA)",
+            "EXIT_10LOW":  f"{_exit_pfx}(10일신저가)",
+            "EXIT_5MA":    f"{_exit_pfx}(5MA)",
             "MANUAL_SYNC": "수동 동기화",
         }.get(src, src)
 

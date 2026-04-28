@@ -157,6 +157,57 @@ def _to_int(val) -> int:
     return int(round(_to_float(val)))
 
 
+def _calc_aligned_axis_bounds(series: list):
+    """두 Y축의 0 기준선과 눈금 간격을 동일하게 맞추기 위한 min/max 계산.
+
+    두 데이터(당일·누적)를 합쳐 하나의 '보기 좋은' 눈금 간격을 결정하고,
+    두 축 모두 같은 min/max 범위를 사용한다.
+    → 눈금 간격이 동일하고, 0 원이 같은 가로선에 온다.
+
+    Returns:
+        (axis_min, axis_max, axis_min, axis_max) — 두 축 공통 범위
+        데이터가 없으면 (None, None, None, None)
+    """
+    import math
+
+    if not series:
+        return None, None, None, None
+
+    left_vals  = [s["daily_pnl"]      for s in series]
+    right_vals = [s["cumulative_pnl"] for s in series]
+
+    # 두 데이터 전체 + 0 을 합친 min/max
+    data_min = min(min(left_vals), min(right_vals), 0)
+    data_max = max(max(left_vals), max(right_vals), 0)
+
+    overall_span = max(data_max - data_min, 1.0)
+
+    # 약 5 구간을 목표로 '보기 좋은' 눈금 간격 산출
+    raw_interval = overall_span / 5.0
+    magnitude    = 10 ** math.floor(math.log10(raw_interval))
+    norm         = raw_interval / magnitude
+    if norm < 1.5:
+        interval = magnitude
+    elif norm < 3.5:
+        interval = 2.0 * magnitude
+    elif norm < 7.5:
+        interval = 5.0 * magnitude
+    else:
+        interval = 10.0 * magnitude
+
+    # 0 기준 위·아래로 필요한 눈금 칸 수
+    n_below = math.ceil(abs(data_min) / interval) if data_min < 0 else 0
+    n_above = math.ceil(data_max      / interval) if data_max > 0 else 0
+    if n_below == 0 and n_above == 0:
+        n_above = 1
+
+    axis_min = float(-n_below * interval)
+    axis_max = float( n_above * interval)
+
+    # 두 축에 동일한 범위 적용 → 눈금 간격·0 위치 자동 정렬
+    return axis_min, axis_max, axis_min, axis_max
+
+
 def build_series_from_portfolio(rows: list) -> list:
     """'포트폴리오 추이' 시트 행들에서 날짜별 실현손익 시계열을 만든다.
 
@@ -294,14 +345,28 @@ def _delete_chart_if_exists(spreadsheet, sheet_id: int, title: str):
         print(f"[pnl_chart] 기존 차트 삭제 실패(무시하고 계속): {e}")
 
 
-def embed_line_chart(spreadsheet, worksheet) -> bool:
-    """콤보 그래프(당일=파란 막대/좌축, 누적=빨간 선/우축)를 임베드한다."""
+def embed_line_chart(spreadsheet, worksheet, series: list = None) -> bool:
+    """콤보 그래프(당일=파란 막대, 누적=빨간 선)를 단일 왼쪽 Y축으로 임베드한다.
+
+    두 시리즈 모두 왼쪽 축 하나를 공유하므로 0 기준선·눈금 간격이 자연히 일치한다.
+    """
     sheet_id    = worksheet.id
     chart_title = _chart_title()
     subtitle    = "Upbit Hybrid Turtle · KRW 기준 (포트폴리오 추이 소스)"
 
     # 같은 제목 차트가 있으면 삭제 후 재생성
     _delete_chart_if_exists(spreadsheet, sheet_id, chart_title)
+
+    # 왼쪽 축 범위 계산 (두 시리즈 합산)
+    l_min, l_max, _, _ = _calc_aligned_axis_bounds(series or [])
+
+    left_axis = {"position": "LEFT_AXIS", "title": "실현손익(원)"}
+    if l_min is not None:
+        left_axis["viewWindowOptions"] = {
+            "viewWindowMode": "EXPLICIT",
+            "viewWindowMin":  l_min,
+            "viewWindowMax":  l_max,
+        }
 
     body = {
         "requests": [
@@ -317,8 +382,7 @@ def embed_line_chart(spreadsheet, worksheet) -> bool:
                                 "headerCount":    1,
                                 "axis": [
                                     {"position": "BOTTOM_AXIS", "title": "날짜"},
-                                    {"position": "LEFT_AXIS",   "title": "일별 실현손익(원)"},
-                                    {"position": "RIGHT_AXIS",  "title": "누적 실현손익(원)"},
+                                    left_axis,
                                 ],
                                 "domains": [{
                                     "domain": {
@@ -354,7 +418,7 @@ def embed_line_chart(spreadsheet, worksheet) -> bool:
                                         },
                                     },
                                     {
-                                        # 누적 실현손익 — 빨간 선, 오른쪽 Y축
+                                        # 누적 실현손익 — 빨간 선, 왼쪽 Y축 (단일 축)
                                         "series": {
                                             "sourceRange": {
                                                 "sources": [{
@@ -365,7 +429,7 @@ def embed_line_chart(spreadsheet, worksheet) -> bool:
                                                 }]
                                             }
                                         },
-                                        "targetAxis": "RIGHT_AXIS",
+                                        "targetAxis": "LEFT_AXIS",
                                         "type": "LINE",
                                         "color": {
                                             "red":   0.84,
@@ -395,7 +459,7 @@ def embed_line_chart(spreadsheet, worksheet) -> bool:
 
     try:
         spreadsheet.batch_update(body)
-        print(f"[pnl_chart] '{chart_title}' 콤보 차트 임베드 완료 (당일=파란막대/좌축, 누적=빨간선/우축)")
+        print(f"[pnl_chart] '{chart_title}' 콤보 차트 임베드 완료 (당일=파란막대, 누적=빨간선, 단일 좌축)")
         return True
     except Exception as e:
         print(f"[pnl_chart] 차트 임베드 오류(무시하고 계속): {e}")
@@ -447,7 +511,7 @@ def run_pnl_chart():
     if spreadsheet is None or worksheet is None:
         return
 
-    embed_line_chart(spreadsheet, worksheet)
+    embed_line_chart(spreadsheet, worksheet, series)
 
     latest = series[-1]
     print(f"[pnl_chart] 최종 — 기간 {series[0]['date']}~{latest['date']} | "

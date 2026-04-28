@@ -137,6 +137,10 @@ def place_exit_order(ticker: str, volume: float, reason: str, current_price: flo
     else:
         profit_rate = 0.0
 
+    # 실제 수익이 손실이면 "익절" → "손절"로 표시 수정
+    if "익절" in reason and profit_rate < 0:
+        reason = reason.replace("익절", "손절")
+
     # 실수령금액 = 매도 거래금액 - 수수료
     gross_amount = round(sell_price * executed_volume, 0)
     net_amount   = round(gross_amount - paid_fee, 0)
