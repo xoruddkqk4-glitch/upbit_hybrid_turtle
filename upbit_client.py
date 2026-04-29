@@ -586,25 +586,33 @@ def _get_execution_from_order(order_no: str, max_retries: int = 5, wait_sec: flo
         if isinstance(detail, dict):
             executed_volume = float(detail.get("executed_volume", 0) or 0)
             paid_fee = float(detail.get("paid_fee", 0) or 0)
+            # ord_type: "price"=시장가 매수(KRW 총액 지정), "market"=시장가 매도, "limit"=지정가
+            # Upbit 은 시장가 매수(ord_type="price") 의 price 필드를 '코인 1개 단가'가 아닌
+            # '총 투자 KRW 금액'으로 채워서 반환한다. 이 값을 단가로 쓰면 수익률이 완전히 깨진다.
+            ord_type = detail.get("ord_type", "")
 
-            # 평균 체결가: detail.price 우선, 없으면 trades 합산으로 계산
-            executed_price = float(detail.get("price", 0) or 0)
-            if executed_price <= 0:
-                trades = detail.get("trades", [])
-                if isinstance(trades, list) and trades:
-                    total_volume = 0.0
-                    total_funds = 0.0
-                    for tr in trades:
-                        if not isinstance(tr, dict):
-                            continue
-                        tr_vol = float(tr.get("volume", 0) or 0)
-                        tr_funds = float(tr.get("funds", 0) or 0)
-                        total_volume += tr_vol
-                        total_funds += tr_funds
-                    if total_volume > 0:
-                        executed_price = total_funds / total_volume
-                        if executed_volume <= 0:
-                            executed_volume = total_volume
+            # ① trades 배열로 실제 체결 단가 계산 (가장 정확)
+            executed_price = 0.0
+            trades = detail.get("trades", [])
+            if isinstance(trades, list) and trades:
+                total_volume = 0.0
+                total_funds = 0.0
+                for tr in trades:
+                    if not isinstance(tr, dict):
+                        continue
+                    tr_vol = float(tr.get("volume", 0) or 0)
+                    tr_funds = float(tr.get("funds", 0) or 0)
+                    total_volume += tr_vol
+                    total_funds += tr_funds
+                if total_volume > 0:
+                    executed_price = total_funds / total_volume
+                    if executed_volume <= 0:
+                        executed_volume = total_volume
+
+            # ② trades 에서 단가를 못 구한 경우: 지정가 주문만 price 필드를 단가로 사용
+            #    시장가 매수(ord_type="price")는 price 필드가 총 투자금액이므로 사용 금지
+            if executed_price <= 0 and ord_type != "price":
+                executed_price = float(detail.get("price", 0) or 0)
 
             if executed_volume > 0 and executed_price > 0:
                 return (executed_volume, executed_price, paid_fee)
