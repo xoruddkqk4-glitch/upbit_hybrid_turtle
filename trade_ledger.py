@@ -456,11 +456,6 @@ def _upsert_portfolio_row(ws, today_str: str, row_values: list):
         print(f"[원장] 포트폴리오 추이 {today_str} 행 신규 추가")
 
 
-def _append_portfolio_intraday_row(ws, row_values: list):
-    """장중 경량 행(기록시각/실현손익/누적수익금 중심)을 append 한다."""
-    ws.append_row(row_values)
-    print("[원장] 포트폴리오 추이 장중 경량 행 추가")
-
 
 def record_portfolio_snapshot(
     total_value: int,
@@ -597,7 +592,8 @@ def refresh_sheets_after_sell():
         except ValueError:
             initial_capital = 0
 
-        # ③ '포트폴리오 추이' 시트 장중 경량 행 append
+        # ③ '포트폴리오 추이' 시트 — 실현손익·누적수익금 갱신
+        #    run_daily.py 행은 잠금, 이후 매도는 별도 행에 기록
         _upsert_portfolio_direct(
             total_value     = summary.get("total_capital",   0),
             coin_value      = summary.get("coin_value",      0),
@@ -679,13 +675,46 @@ def _upsert_portfolio_direct(
 
         ts_kst = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
         if intraday_minimal:
-            _append_portfolio_intraday_row(ws, [
-                ts_kst,
-                "", "", "", "", "",  # 총평가금액~평가손익 (pos 2~6) 장중엔 빈칸
-                realized_pnl_daily,
-                "", "",              # 보유종목수, 보유종목목록 (pos 8~9) 장중엔 빈칸
-                cumulative_profit,
-            ])
+            # run_daily.py 가 오늘 이미 실행됐는지 확인한다.
+            # daily_snapshot.json 의 last_recorded_date 가 오늘이면 실행된 것이다.
+            daily_ran_today = (_load_daily_snapshot().get("last_recorded_date") == today_str)
+
+            # 오늘 행을 두 종류로 구분한다.
+            #   D행(daily snapshot) : B열(총평가금액)에 값이 있음 — run_daily.py 가 기록한 행
+            #   S행(sell 갱신행)    : B열이 비어 있음           — 매도 직후 기록한 행
+            all_values = ws.get_all_values()
+            daily_row_idx = None   # D행 위치
+            sell_row_idx  = None   # S행 위치
+            for i, row in enumerate(all_values[1:], start=2):
+                if row and str(row[0]).startswith(today_str):
+                    b_col = row[1] if len(row) > 1 else ""
+                    if b_col:   # B열에 값 있음 → D행
+                        daily_row_idx = i
+                    else:       # B열이 빈칸 → S행
+                        sell_row_idx = i
+
+            if daily_ran_today:
+                # run_daily.py 행(D행)은 건드리지 않는다.
+                # S행이 있으면 해당 셀만 업데이트, 없으면 새 S행을 추가한다.
+                if sell_row_idx:
+                    ws.update(f"A{sell_row_idx}", [[ts_kst]])
+                    ws.update(f"G{sell_row_idx}", [[realized_pnl_daily]])
+                    ws.update(f"J{sell_row_idx}", [[cumulative_profit]])
+                    print(f"[원장] 포트폴리오 추이 {today_str} 매도 갱신 행 업데이트 (row {sell_row_idx})")
+                else:
+                    ws.append_row([ts_kst, "", "", "", "", "", realized_pnl_daily, "", "", cumulative_profit])
+                    print(f"[원장] 포트폴리오 추이 {today_str} 매도 갱신 행 신규 추가")
+            else:
+                # run_daily.py 가 아직 실행 전 → 오늘 기존 행(D행 또는 S행)에 A·G·J만 업데이트
+                target_row_idx = daily_row_idx or sell_row_idx
+                if target_row_idx:
+                    ws.update(f"A{target_row_idx}", [[ts_kst]])
+                    ws.update(f"G{target_row_idx}", [[realized_pnl_daily]])
+                    ws.update(f"J{target_row_idx}", [[cumulative_profit]])
+                    print(f"[원장] 포트폴리오 추이 {today_str} 실현손익·누적수익금 업데이트 (row {target_row_idx})")
+                else:
+                    ws.append_row([ts_kst, "", "", "", "", "", realized_pnl_daily, "", "", cumulative_profit])
+                    print(f"[원장] 포트폴리오 추이 {today_str} 실현손익·누적수익금 신규 행 추가")
         else:
             _upsert_portfolio_row(ws, today_str, [
                 ts_kst,
