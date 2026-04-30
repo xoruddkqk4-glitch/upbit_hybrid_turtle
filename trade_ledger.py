@@ -310,14 +310,11 @@ def append_trade(record: dict):
         refresh_sheets_after_sell()
 
 
-def calc_realized_pnl_total() -> int:
-    """체결 원장 전체를 훑어 누적 실현손익(원) 을 정수로 반환한다.
+def _calc_realized_pnl_total_legacy() -> int:
+    """[폴백용] 체결 원장을 BUY/SELL 단가로 재계산해 누적 실현손익(원) 을 반환한다.
 
-    가중평균 매입단가 방식:
-        BUY  : 보유수량·가중평균 매입단가 갱신 (수수료가 있으면 당일 손익 차감)
-        SELL : (매도가 − 현재 가중평균 매입단가) × 매도수량 − fee 가 실현손익
-    Upbit API 는 realized_pnl 을 제공하지 않으므로 원장 기반으로 자체 계산한다.
-    원장이 비어있거나 SELL 이 없으면 0 을 반환한다.
+    구글 시트 연결이 불가능할 때만 사용한다.
+    과거에 unit_price 가 잘못 기록된 경우 결과가 부정확할 수 있다.
     """
     if not os.path.exists(LEDGER_FILE):
         return 0
@@ -378,6 +375,137 @@ def calc_realized_pnl_total() -> int:
                 pos["avg_cost"] = 0.0
 
     return int(round(total))
+
+
+def _read_cumulative_baseline_from_sheets():
+    """구글 시트 '포트폴리오 추이'에서 가장 최근 누적수익금과 그 기록 시각을 읽는다.
+
+    Returns:
+        (baseline: int, ts_str: str) — 성공 시
+        (None, None)                 — 연결 실패·데이터 없음 시
+    """
+    try:
+        import gspread
+        from oauth2client.service_account import ServiceAccountCredentials
+
+        json_path   = _resolve_service_account_path()
+        sheet_title = os.getenv("GOOGLE_SPREADSHEET_TITLE", "Upbit Hybrid Turtle Ledger")
+
+        if not os.path.exists(json_path):
+            print("[원장] Google 서비스 계정 파일 없음 → 시트 기준값 읽기 스킵")
+            return None, None
+
+        scope = [
+            "https://spreadsheets.google.com/feeds",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        creds  = ServiceAccountCredentials.from_json_keyfile_name(json_path, scope)
+        client = gspread.authorize(creds)
+
+        try:
+            spreadsheet = client.open(sheet_title)
+        except gspread.SpreadsheetNotFound:
+            print(f"[원장] 스프레드시트 '{sheet_title}' 없음 → 시트 기준값 읽기 스킵")
+            return None, None
+
+        try:
+            ws = spreadsheet.worksheet(PORTFOLIO_SHEET_NAME_REAL)
+        except gspread.WorksheetNotFound:
+            print(f"[원장] '{PORTFOLIO_SHEET_NAME_REAL}' 시트 없음 → 시트 기준값 읽기 스킵")
+            return None, None
+
+        records = ws.get_all_records()
+        if not records:
+            return None, None
+
+        # 누적수익금(원) 컬럼에 유효한 값이 있는 행 중 가장 마지막 행을 기준값으로 사용
+        baseline    = None
+        baseline_ts = None
+        for r in records:
+            ts  = str(r.get("기록시각(KST)", "") or "").strip()
+            val = r.get("누적수익금(원)", "")
+            if not ts or val == "" or val is None:
+                continue
+            try:
+                b = int(round(float(
+                    str(val).replace(",", "").replace("+", "").strip()
+                )))
+                baseline    = b
+                baseline_ts = ts
+            except (ValueError, TypeError):
+                continue
+
+        if baseline is None:
+            print("[원장] 시트에서 유효한 누적수익금 값을 찾지 못함 → 폴백 계산 사용")
+            return None, None
+
+        print(f"[원장] 시트 기준값 읽기 완료 — {baseline_ts} 기준 누적수익금: {baseline:+,}원")
+        return baseline, baseline_ts
+
+    except ImportError:
+        print("[원장] gspread 미설치 → 시트 기준값 읽기 스킵")
+        return None, None
+    except Exception as e:
+        print(f"[원장] 시트 기준값 읽기 오류 (폴백 사용): {e}")
+        return None, None
+
+
+def _sum_profit_amount_since(ts_str: str) -> int:
+    """trade_ledger.json 에서 ts_str 이후에 기록된 SELL 의 profit_amount 를 합산한다.
+
+    구글 시트 마지막 기록 시각 이후에 새로 발생한 매도 수익을 계산하는 데 사용한다.
+    profit_amount 가 숫자가 아닌 행(기록 오류 등)은 자동으로 건너뛴다.
+    """
+    if not os.path.exists(LEDGER_FILE):
+        return 0
+    try:
+        with open(LEDGER_FILE, "r", encoding="utf-8") as f:
+            rows = json.load(f)
+        if not isinstance(rows, list):
+            return 0
+    except (json.JSONDecodeError, IOError):
+        return 0
+
+    total = 0.0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("side", "")).upper() != "SELL":
+            continue
+        row_ts = str(row.get("ts_kst", "") or "").strip()
+        # 기준 시각 이전(또는 같은 시각)은 이미 시트에 반영된 것으로 간주해 건너뛴다
+        if row_ts <= ts_str:
+            continue
+        pa = row.get("profit_amount", "")
+        if isinstance(pa, (int, float)):
+            total += float(pa)
+
+    return int(round(total))
+
+
+def calc_realized_pnl_total() -> int:
+    """누적 실현손익(원) 을 반환한다.
+
+    구글 시트 '포트폴리오 추이'의 가장 최근 누적수익금을 기준값으로 삼고,
+    그 이후 trade_ledger.json 에 새로 기록된 SELL 의 profit_amount 를 더한다.
+
+    구글 시트 연결에 실패하면 BUY/SELL 단가 기반 재계산(_calc_realized_pnl_total_legacy)
+    으로 자동 폴백한다.
+    """
+    baseline, baseline_ts = _read_cumulative_baseline_from_sheets()
+
+    if baseline is not None and baseline_ts:
+        # 구글 시트 기준: 마지막 기록 이후 신규 매도 수익 합산
+        additional = _sum_profit_amount_since(baseline_ts)
+        total = baseline + additional
+        if additional != 0:
+            print(f"[원장] 누적수익금 = 시트 기준 {baseline:+,}원 "
+                  f"+ 신규매도 {additional:+,}원 = {total:+,}원")
+        return total
+
+    # 폴백: 구글 시트 연결 불가 → trade_ledger.json 재계산
+    print("[원장] 구글 시트 연결 실패 → trade_ledger.json 기반 재계산 사용")
+    return _calc_realized_pnl_total_legacy()
 
 
 def calc_realized_pnl_today() -> int:
