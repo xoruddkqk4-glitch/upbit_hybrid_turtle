@@ -259,7 +259,7 @@ python -c "import risk_guardian; risk_guardian.run_guardian()"
 
 - **0.5N 상승 시마다 1 Unit 추가**
 - **코인당 최대 3 Unit**, **포트폴리오 전체 12 Unit** 상한
-- 피라미딩 성공 시 손절가도 `새 체결가 - 2N` 으로 **트레일링 상승**
+- 피라미딩 성공 시 손절가도 `새 평균 매입가 - 2N` 으로 **갱신**
 
 ### 청산
 

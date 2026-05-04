@@ -147,7 +147,7 @@ def run_balance_sync(snapshot: Optional[dict] = None) -> bool:
                 "last_buy_price":     avg_price,
                 "avg_buy_price":      avg_price,
                 "stop_loss_price":    stop_loss,
-                "next_pyramid_price": 999_999_999_999,  # 절대 도달 못할 값 (2중 안전장치)
+                "next_pyramid_price": avg_price * 10,    # max_unit=1 로 피라미딩 차단; 방어용 높은 값
                 "max_unit":           1,
                 "total_volume":       info["volume"],
                 "entry_source":       "MANUAL_SYNC",

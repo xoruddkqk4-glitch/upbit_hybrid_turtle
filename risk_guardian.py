@@ -137,7 +137,15 @@ def place_exit_order(ticker: str, volume: float, reason: str, current_price: flo
     else:
         profit_rate = 0.0
 
-    # 실제 수익이 손실이면 "익절" → "손절"로 표시 수정
+    # 원장 분류(source)는 이름 변경 전 원래 reason 으로 먼저 결정 (변경 후 조회하면 맵에서 못 찾음)
+    exit_source_map = {
+        "2N 하드 손절":          "EXIT_STOP",
+        "10일 신저가 경신 익절": "EXIT_10LOW",
+        "5MA 하향 돌파 익절":    "EXIT_5MA",
+    }
+    exit_source = exit_source_map.get(reason, "EXIT_STOP")
+
+    # 실제 수익이 손실이면 "익절" → "손절"로 표시 수정 (텔레그램·note 표시용)
     if "익절" in reason and profit_rate < 0:
         reason = reason.replace("익절", "손절")
 
@@ -150,13 +158,6 @@ def place_exit_order(ticker: str, volume: float, reason: str, current_price: flo
         profit_amount = round((sell_price - avg_buy_price) * executed_volume - paid_fee, 0)
     else:
         profit_amount = ""
-
-    exit_source_map = {
-        "2N 하드 손절":          "EXIT_STOP",
-        "10일 신저가 경신 익절": "EXIT_10LOW",
-        "5MA 하향 돌파 익절":    "EXIT_5MA",
-    }
-    exit_source = exit_source_map.get(reason, "EXIT_STOP")
 
     trade_ledger.append_trade({
         "side":          "SELL",

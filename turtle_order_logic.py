@@ -229,7 +229,7 @@ def place_entry_order(
                f"오류: {result['message']}")
         print(f"[turtle] {msg}")
         telegram_alert.SendMessage(msg)
-        return
+        return False
 
     order_no = result["order_no"]
     executed_price  = result.get("executed_price", price) or price
@@ -295,6 +295,7 @@ def place_entry_order(
         f"진입 경로: {source_label} (최대 {max_unit} Unit)\n"
         f"손절가: {stop_loss_price:,.0f}원 | 다음 피라미딩: {next_pyramid_price:,.0f}원"
     )
+    return True  # 주문 성공
 
 
 def place_pyramid_order(ticker: str, volume: float, krw_amount: float,
@@ -347,7 +348,7 @@ def place_pyramid_order(ticker: str, volume: float, krw_amount: float,
     )
 
     new_unit              = current_unit + 1
-    new_stop_loss_price   = executed_price - 2.0 * atr_n
+    new_stop_loss_price   = new_avg_price - 2.0 * atr_n   # 평균 매입가 기준 (최근 매수가 기준 오류 수정)
     new_next_pyramid      = executed_price + 0.5 * atr_n
 
     position_state[ticker].update({
@@ -485,12 +486,13 @@ def run_orders(
                   f"({available_krw:,.0f}원 < {krw_amount:,.0f}원) → 진입 스킵")
             continue
 
-        place_entry_order(
+        success = place_entry_order(
             ticker, volume, krw_amount, current_price, atr_n,
             MAX_UNIT_PER_COIN, entry_source, effective_risk_factor,
         )
-        # 같은 사이클 내 API 재조회 없이 가용 KRW를 로컬에서 차감 추적
-        available_krw -= krw_amount
+        # 주문이 성공한 경우에만 가용 KRW 차감 (실패 시 차감하면 다음 코인 진입 기회를 잃음)
+        if success:
+            available_krw -= krw_amount
 
     # ─────────────────────────────────────
     # [B] 기존 포지션 피라미딩 처리

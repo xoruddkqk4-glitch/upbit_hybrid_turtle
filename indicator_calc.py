@@ -269,8 +269,11 @@ def get_all_indicators(ticker: str) -> dict:
         cache  = _load_atr_cache()
         cached = cache.get(ticker, {})
 
-        if cached.get("date") == today_str:
+        if (cached.get("date") == today_str
+                and "s1_high" in cached
+                and "s2_high" in cached):
             # 캐시 적중: 일봉 API 건너뜀, 240분봉만 새로 가져옴
+            # s1_high/s2_high 필드 없는 구버전 캐시는 캐시 미스로 처리해 재계산
             print(f"[indicator] {ticker} 일봉 캐시 적중 ({today_str}) — 일봉 API 생략")
             return {
                 "atr":       cached["atr"],

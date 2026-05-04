@@ -147,7 +147,8 @@
 
 수익 보호와 손실 제한을 위해 트레일링 스탑과 하드 스탑을 병행한다.
 
-- **하드 손절 (2N Stop)**: 어느 Unit 이든 **최종 체결가 대비 2N 하락** 시 전량 즉시 매도.
+- **하드 손절 (2N Stop)**: 어느 Unit 이든 **평균 매입가 대비 2N 하락** 시 전량 즉시 매도.
+  (1차 진입 손절가 = 체결가 - 2N; 피라미딩 시 손절가 = 새 평균 매입가 - 2N 으로 갱신)
 - **트레일링 스탑**:
   - **10일 신저가 경신** → 추세 종료로 판단, 전량 청산.
   - **5MA 하향 돌파 + 평균 매입단가 초과** (수익권) → 기술적 익절.
@@ -262,3 +263,69 @@ python -c "import risk_guardian; risk_guardian.run_guardian()"
 ---
 
 > 마지막 업데이트: 2026-04-27 (매수 금액 상한 및 동적 리스크 계수 — NORMAL/CAPPED/EXCEPTION/SKIP 4단계 삭제, 1U 최대 금액 = 총자본×10% 상한 + 종목별 effective_risk_factor 저장으로 단순화)
+
+# CLAUDE.md
+
+Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
+
+**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+
+## 1. Think Before Coding
+
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
+
+Before implementing:
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them - don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
+
+## 2. Simplicity First
+
+**Minimum code that solves the problem. Nothing speculative.**
+
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
+
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+
+## 3. Surgical Changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+When editing existing code:
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it - don't delete it.
+
+When your changes create orphans:
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+The test: Every changed line should trace directly to the user's request.
+
+## 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+```
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+```
+
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+
+---
+
+**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
