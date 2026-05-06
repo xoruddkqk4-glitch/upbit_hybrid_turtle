@@ -15,7 +15,7 @@
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytz
 
@@ -190,19 +190,24 @@ def get_all_indicators(ticker: str) -> dict:
         "atr": 0.0, "ma5": 0.0, "ma20": 0.0, "day10_low": 0.0,
         "s1_high": 0.0, "s2_high": 0.0,
     }
-    today_str = datetime.now(_KST).strftime("%Y-%m-%d")  # 캐시 유효 기준 날짜 (KST)
+    now = datetime.now(_KST)
+    # 업비트 일봉은 KST 09:00 에 갱신되므로 09:00 이전이면 전날 캐시도 유효하다
+    if now.hour < 9:
+        valid_date = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    else:
+        valid_date = now.strftime("%Y-%m-%d")
 
     try:
         # ── 캐시 확인 ──────────────────────────────────────────────
-        # 오늘 날짜 캐시가 있으면 일봉 API 호출을 생략하고 캐시 값을 사용한다
+        # 현재 세션(업비트 일봉 기준 09:00 ~ 익일 08:59) 캐시가 있으면 API 호출을 생략한다
         cache  = _load_atr_cache()
         cached = cache.get(ticker, {})
 
-        if (cached.get("date") == today_str
+        if (cached.get("date") == valid_date
                 and "s1_high" in cached
                 and "s2_high" in cached):
             # s1_high/s2_high 필드 없는 구버전 캐시는 캐시 미스로 처리해 재계산
-            print(f"[indicator] {ticker} 일봉 캐시 적중 ({today_str}) — 일봉 API 생략")
+            print(f"[indicator] {ticker} 일봉 캐시 적중 ({valid_date}) — 일봉 API 생략")
             return {
                 "atr":       cached["atr"],
                 "ma5":       cached["ma5"],
