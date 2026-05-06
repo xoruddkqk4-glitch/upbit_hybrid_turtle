@@ -172,62 +172,6 @@ def get_daily_chart(ticker: str, count: int = 25) -> list:
     return []
 
 
-def get_minute_chart(ticker: str, minute: int = 240, count: int = 25) -> list:
-    """분봉 OHLCV 데이터를 조회한다.
-
-    240분봉(4시간봉) 20MA 계산에 사용한다. 기본값은 240분봉.
-
-    Args:
-        ticker: 업비트 티커 (예: "KRW-BTC")
-        minute: 분봉 단위 (1, 3, 5, 15, 30, 60, 240 중 하나; 기본 240)
-        count:  요청 건수 (기본 25)
-
-    Returns:
-        시각 오름차순 정렬된 OHLCV 딕셔너리 리스트
-        [{"date": "20260413", "time": "160000", "open": ..., "high": ...,
-          "low": ..., "close": ..., "volume": ...}, ...]
-        조회 실패 시 빈 리스트.
-    """
-    _MAX_RETRIES = 3
-    _RETRY_WAIT  = 5.0
-
-    # pyupbit interval 문자열 변환 (minute240 등)
-    interval = f"minute{minute}"
-
-    for attempt in range(_MAX_RETRIES):
-        try:
-            time.sleep(0.1)
-            df = pyupbit.get_ohlcv(ticker, interval=interval, count=count)
-            if df is None or df.empty:
-                print(f"[upbit_client] 분봉 데이터 없음: {ticker} ({interval})")
-                return []
-
-            result = []
-            for idx, row in df.iterrows():
-                result.append({
-                    "date":   idx.strftime("%Y%m%d"),
-                    "time":   idx.strftime("%H%M%S"),
-                    "open":   float(row["open"]),
-                    "high":   float(row["high"]),
-                    "low":    float(row["low"]),
-                    "close":  float(row["close"]),
-                    "volume": float(row["volume"]),
-                })
-            return result
-
-        except Exception as e:
-            err_str = str(e)
-            if attempt < _MAX_RETRIES - 1:
-                print(f"[upbit_client] 분봉 차트 조회 재시도 "
-                      f"({ticker}, {minute}분, {attempt + 1}/{_MAX_RETRIES}): {err_str}")
-                time.sleep(_RETRY_WAIT)
-            else:
-                print(f"[upbit_client] 분봉 차트 조회 오류 ({ticker}, {minute}분): {e}")
-                return []
-
-    return []
-
-
 # ─────────────────────────────────────────
 # 계좌 조회
 # ─────────────────────────────────────────

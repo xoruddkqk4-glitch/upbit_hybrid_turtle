@@ -5,15 +5,13 @@
 #   - ATR(N): 평균 실제 범위 → Unit 수량 계산, 손절가, 피라미딩 트리거에 사용
 #   - 이동평균선(5MA, 20MA): 트레일링 스탑 판단에 사용
 #   - 10일 신저가: 트레일링 스탑 판단에 사용
-#   - 240분봉 20MA: 동적 목표가(pending_target) 계산에 사용
 #
-# 본 모듈은 upbit_client.get_daily_chart / get_minute_chart 를 통해
+# 본 모듈은 upbit_client.get_daily_chart 를 통해
 # OHLCV 데이터를 가져온다. 암호화폐는 24시간 연속 거래되므로
 # 장중·장외 구분 없이 항상 동일한 지표 계산이 가능하다.
 #
 # [캐싱] ATR·5MA·20MA·10일 신저가는 일봉 데이터로 계산되므로 하루 1회만 계산하면 충분하다.
 # atr_cache.json 에 KST 날짜와 함께 저장해 두고, 같은 날 재실행 시 일봉 API 호출을 생략한다.
-# 240분봉 20MA 는 실시간성이 필요하므로 매 실행마다 새로 가져온다.
 
 import json
 import os
@@ -26,11 +24,9 @@ import upbit_client
 # atr_cache.json 저장 경로 (이 파일과 같은 폴더)
 _DIR           = os.path.dirname(os.path.abspath(__file__))
 ATR_CACHE_FILE = os.path.join(_DIR, "atr_cache.json")
-MINUTE240_CACHE_FILE = os.path.join(_DIR, "minute240_cache.json")
 
 # KST 시간대 (날짜 판단 기준)
 _KST = pytz.timezone("Asia/Seoul")
-MINUTE240_TTL_MINUTES = 10
 
 
 def _load_atr_cache() -> dict:
@@ -62,71 +58,6 @@ def _save_atr_cache(cache: dict):
     except IOError as e:
         print(f"[indicator] atr_cache.json 저장 오류: {e}")
 
-
-def _load_minute240_cache() -> dict:
-    """minute240_cache.json 을 읽어 반환한다.
-
-    구조:
-      {
-        "KRW-BTC": {
-          "updated_at": "2026-04-27 16:30:00",
-          "ma240_20": 9500000.0
-        }
-      }
-    """
-    if not os.path.exists(MINUTE240_CACHE_FILE):
-        return {}
-    try:
-        with open(MINUTE240_CACHE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, dict):
-            return data
-    except (json.JSONDecodeError, IOError):
-        print("[indicator] minute240_cache.json 읽기 오류 → 캐시 무시")
-    return {}
-
-
-def _save_minute240_cache(cache: dict):
-    """minute240_cache.json 을 저장한다."""
-    try:
-        with open(MINUTE240_CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(cache, f, ensure_ascii=False, indent=2)
-    except IOError as e:
-        print(f"[indicator] minute240_cache.json 저장 오류: {e}")
-
-
-def _get_ma240_20_with_ttl(ticker: str, ttl_minutes: int = MINUTE240_TTL_MINUTES) -> float:
-    """240분봉 20MA 를 TTL 캐시 우선으로 조회한다."""
-    now_kst = datetime.now(_KST)
-    cache = _load_minute240_cache()
-    cached = cache.get(ticker, {})
-
-    updated_at_str = cached.get("updated_at")
-    cached_ma = float(cached.get("ma240_20", 0.0) or 0.0)
-
-    if updated_at_str and cached_ma > 0:
-        try:
-            updated_at = _KST.localize(datetime.strptime(updated_at_str, "%Y-%m-%d %H:%M:%S"))
-            age_minutes = (now_kst - updated_at).total_seconds() / 60.0
-            if age_minutes <= ttl_minutes:
-                print(f"[indicator] {ticker} 240분봉 캐시 적중 "
-                      f"({age_minutes:.1f}분 경과, TTL {ttl_minutes}분)")
-                return cached_ma
-        except ValueError:
-            pass
-
-    minute_data = upbit_client.get_minute_chart(ticker, minute=240, count=25)
-    minute_close = [m["close"] for m in minute_data] if minute_data else []
-    ma240_20 = calc_ma(minute_close, period=20)
-
-    if ma240_20 > 0:
-        cache[ticker] = {
-            "updated_at": now_kst.strftime("%Y-%m-%d %H:%M:%S"),
-            "ma240_20": ma240_20,
-        }
-        _save_minute240_cache(cache)
-
-    return ma240_20
 
 
 def calc_atr(ohlcv_list: list, period: int = 20) -> float:
@@ -242,7 +173,6 @@ def get_all_indicators(ticker: str) -> dict:
 
     ATR·5MA·20MA·10일 신저가는 일봉 데이터로 계산되므로 하루 1회만 API를 호출하고
     atr_cache.json 에 캐싱한다. 같은 날 재호출 시 캐시에서 즉시 반환한다.
-    240분봉 20MA 는 4시간마다 변동되므로 매 실행마다 새로 가져온다.
 
     Args:
         ticker: 업비트 티커 (예: "KRW-BTC")
@@ -253,12 +183,11 @@ def get_all_indicators(ticker: str) -> dict:
             "ma5":       9400000.0,  # 5일 이동평균 (일봉 종가)
             "ma20":      9300000.0,  # 20일 이동평균 (일봉 종가)
             "day10_low": 9000000.0,  # 10일 신저가
-            "ma240_20":  9500000.0,  # 240분봉 20MA (동적 목표가 계산용)
         }
         데이터 부족 또는 오류 시 모든 값이 0 인 딕셔너리.
     """
     default   = {
-        "atr": 0.0, "ma5": 0.0, "ma20": 0.0, "day10_low": 0.0, "ma240_20": 0.0,
+        "atr": 0.0, "ma5": 0.0, "ma20": 0.0, "day10_low": 0.0,
         "s1_high": 0.0, "s2_high": 0.0,
     }
     today_str = datetime.now(_KST).strftime("%Y-%m-%d")  # 캐시 유효 기준 날짜 (KST)
@@ -272,7 +201,6 @@ def get_all_indicators(ticker: str) -> dict:
         if (cached.get("date") == today_str
                 and "s1_high" in cached
                 and "s2_high" in cached):
-            # 캐시 적중: 일봉 API 건너뜀, 240분봉만 새로 가져옴
             # s1_high/s2_high 필드 없는 구버전 캐시는 캐시 미스로 처리해 재계산
             print(f"[indicator] {ticker} 일봉 캐시 적중 ({today_str}) — 일봉 API 생략")
             return {
@@ -280,7 +208,6 @@ def get_all_indicators(ticker: str) -> dict:
                 "ma5":       cached["ma5"],
                 "ma20":      cached["ma20"],
                 "day10_low": cached["day10_low"],
-                "ma240_20":  _get_ma240_20_with_ttl(ticker),
                 "s1_high":   float(cached.get("s1_high", 0.0)),
                 "s2_high":   float(cached.get("s2_high", 0.0)),
             }
@@ -312,7 +239,6 @@ def get_all_indicators(ticker: str) -> dict:
             "ma5":       ma5_val,
             "ma20":      ma20_val,
             "day10_low": day10_low_val,
-            "ma240_20":  _get_ma240_20_with_ttl(ticker),
             "s1_high":   s1_high_val,
             "s2_high":   s2_high_val,
         }
@@ -411,7 +337,7 @@ def prefetch_indicators(tickers: list) -> dict:
             print(f"[indicator] {ticker} 프리페치 오류: {e}")
             result[ticker] = {
                 "atr": 0.0, "ma5": 0.0, "ma20": 0.0, "day10_low": 0.0,
-                "ma240_20": 0.0, "s1_high": 0.0, "s2_high": 0.0,
+                "s1_high": 0.0, "s2_high": 0.0,
             }
 
     print("[indicator] 지표 프리페치 완료")
