@@ -72,6 +72,7 @@
 | `balance_sync.py` | 실행 시작 시 실제 잔고 ↔ `held_coin_record.json` 동기화; 수동 매수 코인 발견 시 1회 알림 후 `MANUAL_SYNC` 로 자동 편입 |
 | `turtle_order_logic.py` | 리스크 기반 Unit 수량 계산, 피라미딩 주문 (`manual: true` 종목은 피라미딩 스킵) |
 | `risk_guardian.py` | 2N 하드 손절 및 트레일링 스탑 감시 |
+| `run_cache.py` | ATR 캐시 갱신 전담 스크립트 — KST 09:10 1회 실행, 일봉 지표를 `atr_cache.json` 에 저장 |
 | `run_all.py` | 통합 배치 실행기 — 로그인 후 모든 모듈을 올바른 순서로 1회 실행 |
 | `.env` | API 키·텔레그램·Google 설정 (커밋 금지) |
 | `.env.example` | 환경변수 템플릿 |
@@ -86,7 +87,7 @@
 | `held_coin_record.json` | 보유 코인의 Unit 수·마지막 매수가·평균단가·손절가·피라미딩 트리거가 |
 | `trade_ledger.json` | 누적 체결 원장 (Google Sheets 동기화 대상) |
 | `daily_snapshot.json` | `run_daily.py` 의 하루 1회 포트폴리오 스냅샷 중복 방지 (`last_recorded_date` 필드). 매도 즉시 갱신 경로는 이 파일을 건드리지 않는다. |
-| `atr_cache.json` | 일봉 기반 지표(ATR·5MA·20MA·10일 신저가) 하루 1회 캐시 — `indicator_calc.py` 자동 관리 |
+| `atr_cache.json` | 일봉 기반 지표(ATR·5MA·20MA·10일 신저가) 하루 1회 캐시 — `run_cache.py` (KST 09:10) 가 저장 |
 
 ---
 
@@ -266,5 +267,5 @@ python -c "import risk_guardian; risk_guardian.run_guardian()"
 
 ---
 
-> 마지막 업데이트: 2026-04-27 (매수 금액 상한 및 동적 리스크 계수 — NORMAL/CAPPED/EXCEPTION/SKIP 4단계 삭제, 1U 최대 금액 = 총자본×10% 상한 + 종목별 effective_risk_factor 저장으로 단순화)
+> 마지막 업데이트: 2026-05-06 (ATR 캐시 갱신 로직을 `run_daily.py` 에서 분리 → `run_cache.py` (KST 09:10) 신규 추가. `run_daily.py` 는 KST 23:55 에 포트폴리오 스냅샷·손익차트만 담당)
 
