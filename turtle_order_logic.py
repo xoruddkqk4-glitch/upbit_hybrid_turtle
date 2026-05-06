@@ -46,7 +46,7 @@ MIN_ORDER_KRW = 5000
 MAX_UNIT_PER_COIN = 3
 
 # 포트폴리오 전체 Unit 상한 (모든 코인의 current_unit 합계)
-MAX_TOTAL_UNITS = 12
+MAX_TOTAL_UNITS = 15
 
 # 트레이드당 리스크 계수 (터틀 정석: 1%)
 # 손절가 = 진입가 - 2 × ATR 이므로 2N 이탈 시 최대 손실 = RISK_PER_TRADE × 2 = 자본의 2%.
