@@ -103,7 +103,11 @@
 | 솔라나 | `KRW-SOL` |
 | 도지코인 | `KRW-DOGE` |
 | 에이다 | `KRW-ADA` |
-| 아발란체 | `KRW-AVAX` |
+| 알고랜드 | `KRW-ALGO` |
+| 헤데라 | `KRW-HBAR` |
+| 체인링크 | `KRW-LINK` |
+| 수이 | `KRW-SUI` |
+| 스텔라루멘 | `KRW-XLM` |
 
 > 목록을 바꾸려면 `config.py` 의 `LOVELY_COIN_LIST` 를 직접 편집한다.
 > 자동 스크리너(동적 종목 선정) 는 본 프로젝트에서 제공하지 않는다.
