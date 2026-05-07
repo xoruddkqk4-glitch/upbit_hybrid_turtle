@@ -237,8 +237,42 @@ def run_guardian(balance: Optional[list] = None, indicators_map: Optional[dict] 
             print(f"[risk_guardian] {name}({ticker}) ⚠️ 감시 목록에서 제외됐지만 보유 중 "
                   f"→ 손절·익절 감시 계속")
 
+        # 출력·트레일링 스탑 양쪽에서 쓸 지표를 미리 한 번만 가져온다
+        indicators = {}
+        try:
+            if indicators_map and ticker in indicators_map:
+                indicators = indicators_map[ticker]
+            else:
+                time.sleep(0.3)
+                indicators = indicator_calc.get_all_indicators(ticker)
+        except Exception as e:
+            print(f"[risk_guardian] {ticker} 지표 계산 오류: {e}")
+            indicators = {}
+
+        # 3가지 매도 기준 가격 후보 수집 (가격이 위에 있을수록 먼저 발동)
+        avg_buy_price   = pos.get("avg_buy_price", 0)
+        stop_loss_price = pos.get("stop_loss_price", 0)
+        day10_low       = indicators.get("day10_low", 0) or 0
+        ma5             = indicators.get("ma5", 0)       or 0
+
+        sell_candidates = []
+        if stop_loss_price > 0:
+            sell_candidates.append(("2N 하드손절", stop_loss_price))
+        if day10_low > 0:
+            sell_candidates.append(("10일 신저가", day10_low))
+        # 5MA 익절은 평균가보다 ma5 가 높을 때만 발동 가능 (수익권 익절 조건)
+        if ma5 > 0 and avg_buy_price > 0 and ma5 > avg_buy_price:
+            sell_candidates.append(("5MA 익절", ma5))
+
+        # 후보 중 가장 높은 가격 = 가장 먼저 발동될 매도 기준
+        if sell_candidates:
+            sell_candidates.sort(key=lambda x: x[1], reverse=True)
+            top_label, top_price = sell_candidates[0]
+            sell_str = f"매도기준: {top_price:,.0f}원 ({top_label})"
+        else:
+            sell_str = "매도기준: -"
+
         # 현재가 옆에 평균가 대비 수익률(%) 과 평가 수익금(원) 표시
-        avg_buy_price = pos.get("avg_buy_price", 0)
         if avg_buy_price > 0:
             profit_pct    = (current_price - avg_buy_price) / avg_buy_price * 100
             profit_amount = (current_price - avg_buy_price) * sellable_qty
@@ -249,7 +283,7 @@ def run_guardian(balance: Optional[list] = None, indicators_map: Optional[dict] 
 
         print(f"[risk_guardian] {name}({ticker}) 감시 중 — 현재가: {current_price:,.0f}원{profit_str} "
               f"| 평균가: {avg_buy_price:,.0f}원 "
-              f"| 손절가: {pos.get('stop_loss_price', 0):,.0f}원 "
+              f"| {sell_str} "
               f"| 다음피라미딩가: {pos.get('next_pyramid_price', 0):,.0f}원")
 
         # ① 하드 손절 먼저 확인
@@ -257,17 +291,12 @@ def run_guardian(balance: Optional[list] = None, indicators_map: Optional[dict] 
             place_exit_order(ticker, sellable_qty, "2N 하드 손절", current_price)
             continue
 
-        # ② 트레일링 스탑 확인
+        # ② 트레일링 스탑 확인 (지표는 위에서 이미 계산됨)
         try:
-            if indicators_map and ticker in indicators_map:
-                indicators = indicators_map[ticker]
-            else:
-                time.sleep(0.3)
-                indicators = indicator_calc.get_all_indicators(ticker)
             exit_reason = check_trailing_stop(ticker, current_price, pos, indicators)
             if exit_reason:
                 place_exit_order(ticker, sellable_qty, exit_reason, current_price)
         except Exception as e:
-            print(f"[risk_guardian] {ticker} 지표 계산 오류: {e}")
+            print(f"[risk_guardian] {ticker} 트레일링 스탑 확인 오류: {e}")
 
     print("[risk_guardian] 손절·익절 감시 완료")
