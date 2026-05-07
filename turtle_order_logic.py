@@ -299,8 +299,15 @@ def place_entry_order(
 
 
 def place_pyramid_order(ticker: str, volume: float, krw_amount: float,
-                        price: float, atr_n: float):
-    """피라미딩(추가 매수) 주문을 실행하고 포지션 상태를 업데이트한다."""
+                        price: float, atr_n: float,
+                        effective_risk_factor: float = RISK_PER_TRADE):
+    """피라미딩(추가 매수) 주문을 실행하고 포지션 상태를 업데이트한다.
+
+    effective_risk_factor: 이번 피라미딩에서 calc_unit_size() 가 재계산한
+                           실제 적용 리스크 계수. 상한이 다시 걸리면 0.01 미만이 된다.
+                           held_coin_record.json 의 동명 필드를 매번 새 값으로 덮어쓰기 때문에,
+                           옛 보유 종목(필드 없음)도 첫 피라미딩 시 자동으로 채워진다.
+    """
     watchlist = get_watchlist()
     if ticker not in watchlist:
         print(f"[turtle] {ticker} 감시 코인 외 → 피라미딩 주문 거부")
@@ -352,14 +359,22 @@ def place_pyramid_order(ticker: str, volume: float, krw_amount: float,
     new_next_pyramid      = executed_price + 0.5 * atr_n
 
     position_state[ticker].update({
-        "current_unit":       new_unit,
-        "last_buy_price":     executed_price,
-        "avg_buy_price":      new_avg_price,
-        "stop_loss_price":    new_stop_loss_price,
-        "next_pyramid_price": new_next_pyramid,
-        "total_volume":       new_total_vol,
+        "current_unit":          new_unit,
+        "last_buy_price":        executed_price,
+        "avg_buy_price":         new_avg_price,
+        "stop_loss_price":       new_stop_loss_price,
+        "next_pyramid_price":    new_next_pyramid,
+        "total_volume":          new_total_vol,
+        "effective_risk_factor": effective_risk_factor,
     })
     save_position_state(position_state)
+
+    # 상한 조정 여부에 따라 표시 레이블 결정 (1차 진입과 동일 형식)
+    risk_label = (
+        f"리스크 {effective_risk_factor*100:.2f}%"
+        if effective_risk_factor >= RISK_PER_TRADE
+        else f"리스크 {effective_risk_factor*100:.4f}% ↓상한조정"
+    )
 
     trade_ledger.append_trade({
         "side":        "BUY",
@@ -370,11 +385,11 @@ def place_pyramid_order(ticker: str, volume: float, krw_amount: float,
         "order_no":    order_no,
         "order_type":  "MARKET",
         "source":      "PYRAMID",
-        "note":        f"{new_unit}차 피라미딩 | 손절가: {new_stop_loss_price:,.0f}원",
+        "note":        f"{new_unit}차 피라미딩({risk_label}) | 손절가: {new_stop_loss_price:,.0f}원",
     })
 
     telegram_alert.SendMessage(
-        f"📈 피라미딩\n"
+        f"📈 피라미딩 [{risk_label}]\n"
         f"코인: {name}({ticker})\n"
         f"추가 수량: {executed_volume:.8f}개 @{executed_price:,.0f}원 "
         f"({new_unit}/{max_unit} Unit)\n"
@@ -530,11 +545,13 @@ def run_orders(
         if not check_pyramid_trigger(ticker, current_price, pos):
             continue
 
+        # 피라미딩 시에도 1차 진입과 동일하게 상한 재검사 (calc_unit_size 내부에서 수행)
+        # 반환된 effective_risk_factor 는 held_coin_record 에 갱신되어 옛 종목 필드도 채워진다
         result = calc_unit_size(ticker, current_price, atr_n, total_capital)
         if result is None:
             continue
 
-        volume, krw_amount, _ = result
+        volume, krw_amount, effective_risk_factor = result
 
         # 포트폴리오 전체 Unit 한도 재확인
         fresh_state         = load_position_state()
@@ -551,7 +568,8 @@ def run_orders(
                   f"({available_krw:,.0f}원 < {krw_amount:,.0f}원) → 피라미딩 스킵")
             continue
 
-        place_pyramid_order(ticker, volume, krw_amount, current_price, atr_n)
+        place_pyramid_order(ticker, volume, krw_amount, current_price, atr_n,
+                            effective_risk_factor)
         available_krw -= krw_amount
 
     print("[turtle] 주문 처리 완료")
