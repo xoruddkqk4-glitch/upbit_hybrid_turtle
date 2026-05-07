@@ -237,14 +237,15 @@ def run_guardian(balance: Optional[list] = None, indicators_map: Optional[dict] 
             print(f"[risk_guardian] {name}({ticker}) ⚠️ 감시 목록에서 제외됐지만 보유 중 "
                   f"→ 손절·익절 감시 계속")
 
-        # 현재가 옆에 평균가 대비 수익률(%) 표시
+        # 현재가 옆에 평균가 대비 수익률(%) 과 평가 수익금(원) 표시
         avg_buy_price = pos.get("avg_buy_price", 0)
         if avg_buy_price > 0:
-            profit_pct  = (current_price - avg_buy_price) / avg_buy_price * 100
-            profit_sign = "+" if profit_pct >= 0 else ""
-            profit_str  = f" ({profit_sign}{profit_pct:.2f}%)"
+            profit_pct    = (current_price - avg_buy_price) / avg_buy_price * 100
+            profit_amount = (current_price - avg_buy_price) * sellable_qty
+            profit_sign   = "+" if profit_pct >= 0 else ""
+            profit_str    = f" ({profit_sign}{profit_pct:.2f}%, {profit_sign}{profit_amount:,.0f}원)"
         else:
-            profit_str  = ""
+            profit_str    = ""
 
         print(f"[risk_guardian] {name}({ticker}) 감시 중 — 현재가: {current_price:,.0f}원{profit_str} "
               f"| 평균가: {avg_buy_price:,.0f}원 "
