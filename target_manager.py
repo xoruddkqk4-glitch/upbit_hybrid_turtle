@@ -170,9 +170,15 @@ def run_update(balance: Optional[list] = None, indicators_map: Optional[dict] = 
                 "last_updated":     now_kst,
             }
 
-            # 로그 출력
-            s1_str = f"✅ S1(since {new_s1_since})" if new_s1 else "S1미달"
-            s2_str = f"✅ S2(since {new_s2_since})" if new_s2 else "S2미달"
+            # 로그 출력 (S1·S2 돌파 기준값을 함께 표시해 현재가와의 차이를 한눈에 보이게 함)
+            s1_str = (
+                f"✅ S1돌파(20일고가:{s1_high:,.0f}원, since {new_s1_since})"
+                if new_s1 else f"S1미달(20일고가:{s1_high:,.0f}원)"
+            )
+            s2_str = (
+                f"✅ S2돌파(55일고가:{s2_high:,.0f}원, since {new_s2_since})"
+                if new_s2 else f"S2미달(55일고가:{s2_high:,.0f}원)"
+            )
             print(f"[target_manager] {name}({ticker}) "
                   f"현재가:{current_price:,.0f}원 / {s1_str} / {s2_str}")
 

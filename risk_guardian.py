@@ -237,8 +237,19 @@ def run_guardian(balance: Optional[list] = None, indicators_map: Optional[dict] 
             print(f"[risk_guardian] {name}({ticker}) ⚠️ 감시 목록에서 제외됐지만 보유 중 "
                   f"→ 손절·익절 감시 계속")
 
-        print(f"[risk_guardian] {name}({ticker}) 감시 중 — 현재가: {current_price:,.0f}원 "
-              f"| 손절가: {pos.get('stop_loss_price', 0):,.0f}원")
+        # 현재가 옆에 평균가 대비 수익률(%) 표시
+        avg_buy_price = pos.get("avg_buy_price", 0)
+        if avg_buy_price > 0:
+            profit_pct  = (current_price - avg_buy_price) / avg_buy_price * 100
+            profit_sign = "+" if profit_pct >= 0 else ""
+            profit_str  = f" ({profit_sign}{profit_pct:.2f}%)"
+        else:
+            profit_str  = ""
+
+        print(f"[risk_guardian] {name}({ticker}) 감시 중 — 현재가: {current_price:,.0f}원{profit_str} "
+              f"| 평균가: {avg_buy_price:,.0f}원 "
+              f"| 손절가: {pos.get('stop_loss_price', 0):,.0f}원 "
+              f"| 다음피라미딩가: {pos.get('next_pyramid_price', 0):,.0f}원")
 
         # ① 하드 손절 먼저 확인
         if check_hard_stop(ticker, current_price, pos):
