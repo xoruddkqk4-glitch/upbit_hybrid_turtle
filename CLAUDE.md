@@ -3,7 +3,7 @@
 **Claude Code 세션은 본 파일만으로 시작한다.**
 
 **이 프로젝트가 다루는 것:** Upbit Open API 를 이용한 **암호화폐(KRW 마켓) 자동매매 시스템**.
-매매 전략: **터틀 트레이딩(자금 관리) + 동적 목표가(진입 검증) 하이브리드** 전략.
+매매 전략: **터틀 트레이딩(자금 관리) + 눌림→재돌파(진입 검증) 하이브리드** 전략.
 
 실행 모델: **원샷(one-shot) 배치 스크립트**. AWS EC2 등의 서버에서
 `crontab` 으로 일정 간격(예: 5~15분)마다 `run_all.py` 를 호출한다.
@@ -50,8 +50,8 @@
 │   ├── balance_sync.py      — 실행 시작 시 실제 잔고 ↔ held_coin_record.json 동기화 (수동 매수 코인 자동 편입 + 수동 거래 시트 자동 기록)
 │   └── config.py            — LOVELY_COIN_LIST (고정 감시 목록)
 ├── [SA-MODULE-ENTRY]
-│   ├── target_manager.py    — 동적 목표가 산출, unheld_coin_record.json 관리
-│   └── timer_agent.py       — 30분 안착 검증 타이머 + 터틀 S1/S2 신호
+│   ├── target_manager.py    — 터틀 S1/S2 신호 감지, 눌림→재돌파 상태(peak) 관리, unheld_coin_record.json 갱신
+│   └── timer_agent.py       — 눌림→재돌파 조건 확인 + 터틀 S1/S2 진입 신호 산출
 └── [SA-MODULE-TRADE]
     ├── turtle_order_logic.py — Unit 수량 계산, 피라미딩 주문
     └── risk_guardian.py      — 2N 손절 + 트레일링 스탑 감시 (호출 시점 1회 판정)
@@ -68,8 +68,8 @@
 | `pnl_chart.py` | `손익차트` 시트·차트 갱신 모듈. 5개 단위(일/주/월/분기/년) 집계 데이터를 숨김 시트 `차트데이터` 에 저장하고, `손익차트` 시트는 F1 드롭다운 + ARRAYFORMULA + 콤보 차트 1개로 구성. **사용자가 F1 만 바꿔도 시트 함수가 즉시 차트 데이터를 다시 계산해 차트가 자동 전환됨** (Apps Script 불필요, 구글시트 기본 기능). 진입점: `update_pnl_chart()` (호환용 별칭 `run_pnl_chart`). |
 | `telegram_alert.py` | 텔레그램 알림 단일 모듈 |
 | `config.py` | `get_watchlist()` — `LOVELY_COIN_LIST` 고정 목록 반환 |
-| `target_manager.py` | 터틀 S1/S2 신호 감지 및 미보유 코인 상태 관리 |
-| `timer_agent.py` | 터틀 신호 30분 가드 확인 + 진입 신호 산출 |
+| `target_manager.py` | 터틀 S1/S2 신호 감지 + 눌림→재돌파 상태(peak) 관리 + unheld_coin_record.json 갱신 |
+| `timer_agent.py` | 눌림→재돌파 조건 확인 + 진입 신호 산출 |
 | `balance_sync.py` | 실행 시작 시 실제 잔고 ↔ `held_coin_record.json` 동기화; 수동 매수 코인 발견 시 1회 알림 후 `MANUAL_SYNC` 로 자동 편입. 잔고 불일치 발견 시 그 종목의 Upbit done 주문 중 ledger 에 없는 거래를 `MANUAL_BUY`/`MANUAL_SELL` 로 자동 시트 기록 (수동 매수일 땐 평균가·손절가·피라미딩가도 함께 재계산) |
 | `turtle_order_logic.py` | 리스크 기반 Unit 수량 계산, 피라미딩 주문 (`manual: true` 종목은 피라미딩 스킵) |
 | `risk_guardian.py` | 2N 하드 손절 및 트레일링 스탑 감시 |
@@ -84,7 +84,7 @@
 
 | 파일 | 내용 |
 |------|------|
-| `unheld_coin_record.json` | 미보유 코인의 터틀 신호(`turtle_s1/s2_signal`) 및 신호 발생 시각(`turtle_s1/s2_since`) |
+| `unheld_coin_record.json` | 미보유 코인의 터틀 신호(`turtle_s1/s2_signal`) 및 눌림→재돌파 상태(`peak_price`, `peak_locked`, `entry_ready`) |
 | `held_coin_record.json` | 보유 코인의 Unit 수·마지막 매수가·평균단가·손절가·피라미딩 트리거가 |
 | `trade_ledger.json` | 누적 체결 원장 (Google Sheets 동기화 대상) |
 | `daily_snapshot.json` | `run_daily.py` 의 하루 1회 포트폴리오 스냅샷 중복 방지 (`last_recorded_date` 필드). 매도 즉시 갱신 경로는 이 파일을 건드리지 않는다. |
@@ -120,11 +120,15 @@
 
 ### 1. 진입 단계 (Entry)
 
-**터틀 S1 / S2 신고가 돌파 + 30분 가드** — 두 조건을 **AND** 로 모두 만족해야 진입한다.
+**터틀 S1 / S2 신고가 돌파 + 눌림→재돌파** — 두 조건을 **AND** 로 모두 만족해야 진입한다.
 
 - 직전 20일(S1) 또는 55일(S2) 장중 고가를 현재가가 돌파 (`turtle_s1/s2_signal = True`)
-- 해당 신호가 **30분 이상 연속 유지** (`turtle_s1/s2_since` 기준 경과 시간 확인)
-- 신호가 꺼지면 타이머(`_since`) 초기화 → 재돌파 시 30분 다시 카운트
+- 돌파 후 **한 번 눌렸다가 그 시점의 최고점을 다시 돌파** (`turtle_s1/s2_entry_ready = True`)
+
+**상태 흐름 (target_manager → unheld_coin_record.json 에 저장):**
+- `WATCHING`: 신호 ON 직후. 현재가로 최고값(`peak_price`) 계속 갱신. 현재가 < 최고값 → `PULLBACK` 으로 전환
+- `PULLBACK`: 최고값 잠금(`peak_locked = True`). 현재가 > 최고값 → `entry_ready = True` (진입 신호)
+- 신호 OFF (현재가 < 돌파 기준선) → 최고값·잠금·진입 신호 전체 초기화
 - S1·S2 동시 해당 시 S2 우선 (`TURTLE_S2 > TURTLE_S1`)
 
 ### 2. 포지션 사이징 및 피라미딩
@@ -268,5 +272,5 @@ python -c "import risk_guardian; risk_guardian.run_guardian()"
 
 ---
 
-> 마지막 업데이트: 2026-05-29 (수동 매수·매도 거래도 잔고 불일치 발견 시 그 종목의 Upbit done 주문을 조회해 `MANUAL_BUY`/`MANUAL_SELL` 로 시트1 자동 기록. 수동 매수일 땐 `held_coin_record` 의 평균가·손절가·피라미딩가도 함께 재계산. 손익차트 X축 단위는 손익차트 시트 F1 드롭다운으로 즉시 전환 — 시트 함수(ARRAYFORMULA + 숨김 시트 `차트데이터`) 가 자동으로 그 단위의 데이터를 차트에 공급. Apps Script 불필요.)
+> 마지막 업데이트: 2026-05-29 (진입 필터를 30분 가드에서 눌림→재돌파 방식으로 교체. target_manager.py 가 peak 상태(WATCHING/PULLBACK/entry_ready) 를 unheld_coin_record.json 에 저장하고, timer_agent.py 가 entry_ready 플래그를 읽어 진입 신호를 산출. `_since` 타임스탬프 필드 제거.)
 

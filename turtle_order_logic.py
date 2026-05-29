@@ -255,11 +255,10 @@ def place_entry_order(
 
     # 체결 원장 기록
     source_map = {
-        "TARGET_30MIN": "ENTRY_30MIN",
-        "TURTLE_S1":    "ENTRY_S1",
-        "TURTLE_S2":    "ENTRY_S2",
+        "TURTLE_S1": "ENTRY_S1",
+        "TURTLE_S2": "ENTRY_S2",
     }
-    ledger_source = source_map.get(entry_source, "ENTRY_30MIN")
+    ledger_source = source_map.get(entry_source, "ENTRY_S1")
 
     # 상한 조정 여부에 따라 표시 레이블 결정
     risk_label = (
@@ -283,9 +282,8 @@ def place_entry_order(
 
     # 텔레그램 알림
     source_label = {
-        "TURTLE_S2":    "터틀S2(55일신고가)",
-        "TURTLE_S1":    "터틀S1(20일신고가)",
-        "TARGET_30MIN": "목표가30분",
+        "TURTLE_S2": "터틀S2(55일신고가) 눌림→재돌파",
+        "TURTLE_S1": "터틀S1(20일신고가) 눌림→재돌파",
     }.get(entry_source, entry_source)
     telegram_alert.SendMessage(
         f"✅ 터틀 진입 [{risk_label}]\n"

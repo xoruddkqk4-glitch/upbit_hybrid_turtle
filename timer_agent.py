@@ -2,12 +2,13 @@
 # 진입 신호 통합 모듈
 #
 # 역할:
-#   터틀 S1(20일 신고가) / S2(55일 신고가) 돌파 신호가
-#   30분 이상 연속 유지된 코인을 찾아 진입 신호 목록으로 반환한다.
+#   터틀 S1(20일 신고가) / S2(55일 신고가) 돌파 후
+#   눌림→재돌파 조건이 충족된 코인을 찾아 진입 신호 목록으로 반환한다.
 #
 #   매수 조건 (AND):
-#     ① 터틀 신호 True  — target_manager 가 s1/s2 신호 감지
-#     ② 30분 이상 유지  — target_manager 가 기록한 _since 시각 기준
+#     ① 터틀 신호 True       — target_manager 가 s1/s2 신호 감지
+#     ② entry_ready = True  — target_manager 가 눌림→재돌파 조건 확인
+#        (돌파 → 최고값 추적 → 눌림 → 최고값 재돌파 시 True)
 #
 # 반환 형식:
 #   [{"ticker": "KRW-BTC", "entry_source": "TURTLE_S1"}, ...]
@@ -19,50 +20,51 @@
 #   import timer_agent
 #   entry_signals = timer_agent.run_timer_check()
 
-from datetime import datetime, timedelta
-
-import pytz
-
 from config import get_watchlist
 from target_manager import load_unheld_record
 
-KST = pytz.timezone("Asia/Seoul")
-
-# 30분 가드: 신호 발생 후 이 시간 이상 유지돼야 진입 신호 발생
-GUARD_MINUTES = 30
-
 
 # ─────────────────────────────────────────
-# 터틀 신호 30분 가드 확인
+# 눌림→재돌파 진입 조건 확인
 # ─────────────────────────────────────────
 
-def check_turtle_30min_passed(ticker: str, since_str: str) -> bool:
-    """터틀 신호가 since_str 시각부터 30분 이상 유지됐는지 확인한다."""
-    if not since_str:
-        return False
+def check_pullback_rebreak(ticker: str, signal_key: str, data: dict) -> bool:
+    """눌림→재돌파 진입 조건이 충족됐는지 확인한다.
 
-    try:
-        since    = KST.localize(datetime.strptime(since_str, "%Y-%m-%d %H:%M:%S"))
-        now_kst  = datetime.now(KST)
-        elapsed  = now_kst - since
+    target_manager 가 계산해서 저장한 entry_ready 플래그를 읽는다.
+    True 이면 "돌파 후 한 번 눌렸다가 최고값을 다시 돌파한 것"이 확인된 것이다.
 
-        if elapsed >= timedelta(minutes=GUARD_MINUTES):
-            elapsed_min = int(elapsed.total_seconds() / 60)
-            name = get_watchlist().get(ticker, {}).get("name", ticker)
-            print(f"[timer_agent] {name}({ticker}) ✅ 30분 가드 통과! "
-                  f"({elapsed_min}분 유지)")
-            return True
-        else:
-            remaining     = timedelta(minutes=GUARD_MINUTES) - elapsed
-            remaining_min = int(remaining.total_seconds() / 60) + 1
-            name          = get_watchlist().get(ticker, {}).get("name", ticker)
-            print(f"[timer_agent] {name}({ticker}) ⏳ 대기 중 "
-                  f"(앞으로 약 {remaining_min}분 더 유지해야 함)")
-            return False
+    Args:
+        ticker:     코인 티커 (예: KRW-BTC)
+        signal_key: "s1" 또는 "s2"
+        data:       unheld_coin_record 에서 읽은 코인 데이터
 
-    except (ValueError, TypeError) as e:
-        print(f"[timer_agent] {ticker} 타이머 시각 파싱 오류: {e}")
-        return False
+    Returns:
+        True 면 진입 신호 발생.
+    """
+    entry_ready = data.get(f"turtle_{signal_key}_entry_ready", False)
+    peak_price  = data.get(f"turtle_{signal_key}_peak_price")
+    locked      = data.get(f"turtle_{signal_key}_peak_locked", False)
+    signal      = data.get(f"turtle_{signal_key}_signal", False)
+    name        = get_watchlist().get(ticker, {}).get("name", ticker)
+    label       = signal_key.upper()
+
+    if entry_ready and peak_price:
+        print(f"[timer_agent] {name}({ticker}) ✅ {label} 눌림→재돌파 진입 신호! "
+              f"(최고값 {peak_price:,.0f}원 재돌파)")
+        return True
+
+    # 상태별 대기 메시지 (디버깅용)
+    if signal and not locked:
+        peak_str = f"{peak_price:,.0f}원" if peak_price else "?"
+        print(f"[timer_agent] {name}({ticker}) ⏳ {label} WATCHING "
+              f"(최고값 추적 중: {peak_str})")
+    elif signal and locked:
+        peak_str = f"{peak_price:,.0f}원" if peak_price else "?"
+        print(f"[timer_agent] {name}({ticker}) ⏳ {label} PULLBACK "
+              f"(최고값 {peak_str} 재돌파 대기 중)")
+
+    return False
 
 
 # ─────────────────────────────────────────
@@ -72,7 +74,7 @@ def check_turtle_30min_passed(ticker: str, since_str: str) -> bool:
 def run_timer_check() -> list:
     """진입 신호 코인 목록을 반환한다.
 
-    조건: 터틀 S1 또는 S2 신호가 True 이고, 해당 신호가 30분 이상 유지된 코인.
+    조건: 터틀 S1 또는 S2 신호가 True 이고, 눌림→재돌파 조건이 충족된 코인.
     S1·S2 동시 해당 시 S2 우선.
 
     Returns:
@@ -99,21 +101,21 @@ def run_timer_check() -> list:
 
         current_priority = signal_priority.get(ticker, (99, None))[0]
 
-        # S1 신호 + 30분 가드 확인
+        # S1 신호 + 눌림→재돌파 확인
         if data.get("turtle_s1_signal", False):
-            if check_turtle_30min_passed(ticker, data.get("turtle_s1_since")):
+            if check_pullback_rebreak(ticker, "s1", data):
                 if 1 < current_priority:
                     name = watchlist.get(ticker, {}).get("name", ticker)
-                    print(f"[timer_agent] {name}({ticker}) ✅ 터틀 S1 진입 신호 (20일 신고가 + 30분)")
+                    print(f"[timer_agent] {name}({ticker}) ✅ 터틀 S1 진입 신호 (20일 신고가 눌림→재돌파)")
                     signal_priority[ticker] = (1, "TURTLE_S1")
                     current_priority = 1
 
-        # S2 신호 + 30분 가드 확인 (최우선)
+        # S2 신호 + 눌림→재돌파 확인 (최우선)
         if data.get("turtle_s2_signal", False):
-            if check_turtle_30min_passed(ticker, data.get("turtle_s2_since")):
+            if check_pullback_rebreak(ticker, "s2", data):
                 if 0 < current_priority:
                     name = watchlist.get(ticker, {}).get("name", ticker)
-                    print(f"[timer_agent] {name}({ticker}) ✅ 터틀 S2 진입 신호 (55일 신고가 + 30분)")
+                    print(f"[timer_agent] {name}({ticker}) ✅ 터틀 S2 진입 신호 (55일 신고가 눌림→재돌파)")
                     signal_priority[ticker] = (0, "TURTLE_S2")
 
     entry_signals = [
