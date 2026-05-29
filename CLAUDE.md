@@ -65,7 +65,7 @@
 | `myUpbit.py` | pyupbit 기반 저수준 유틸(지표·시장가 매수/매도·소량정리 등) |
 | `indicator_calc.py` | ATR(N), 20MA, 5MA, 10일 신저가, N일 신고가 계산 |
 | `trade_ledger.py` | 체결 원장 기록 + Google Sheets 동기화; SELL 체결 시 포트폴리오 추이·손익차트 즉시 갱신 (upsert) |
-| `pnl_chart.py` | `손익차트` 시트·차트 갱신 모듈. 메인(일 단위) 차트는 항상 표시, 보조 차트는 시트 K1 드롭다운에서 사용자가 고른 단위(주/월/분기/년)로 그려진다. K1 이 "일" 이면 보조 차트는 생략. |
+| `pnl_chart.py` | `손익차트` 시트·차트 갱신 모듈. 5개 단위(일/주/월/분기/년) 집계 데이터를 숨김 시트 `차트데이터` 에 저장하고, `손익차트` 시트는 F1 드롭다운 + ARRAYFORMULA + 콤보 차트 1개로 구성. **사용자가 F1 만 바꿔도 시트 함수가 즉시 차트 데이터를 다시 계산해 차트가 자동 전환됨** (Apps Script 불필요, 구글시트 기본 기능). 진입점: `update_pnl_chart()` (호환용 별칭 `run_pnl_chart`). |
 | `telegram_alert.py` | 텔레그램 알림 단일 모듈 |
 | `config.py` | `get_watchlist()` — `LOVELY_COIN_LIST` 고정 목록 반환 |
 | `target_manager.py` | 터틀 S1/S2 신호 감지 및 미보유 코인 상태 관리 |
@@ -268,5 +268,5 @@ python -c "import risk_guardian; risk_guardian.run_guardian()"
 
 ---
 
-> 마지막 업데이트: 2026-05-29 (수동 매수·매도 거래도 잔고 불일치 발견 시 그 종목의 Upbit done 주문을 조회해 `MANUAL_BUY`/`MANUAL_SELL` 로 시트1 자동 기록. 수동 매수일 땐 `held_coin_record` 의 평균가·손절가·피라미딩가도 함께 재계산. 손익차트 X축 단위를 시트 K1 드롭다운에서 일/주/월/분기/년 중 선택 가능 — 메인(일) 차트는 고정, 보조 차트는 선택 단위로 자동 갱신.)
+> 마지막 업데이트: 2026-05-29 (수동 매수·매도 거래도 잔고 불일치 발견 시 그 종목의 Upbit done 주문을 조회해 `MANUAL_BUY`/`MANUAL_SELL` 로 시트1 자동 기록. 수동 매수일 땐 `held_coin_record` 의 평균가·손절가·피라미딩가도 함께 재계산. 손익차트 X축 단위는 손익차트 시트 F1 드롭다운으로 즉시 전환 — 시트 함수(ARRAYFORMULA + 숨김 시트 `차트데이터`) 가 자동으로 그 단위의 데이터를 차트에 공급. Apps Script 불필요.)
 
