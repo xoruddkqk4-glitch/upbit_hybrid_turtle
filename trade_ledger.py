@@ -43,11 +43,13 @@ KST = pytz.timezone("Asia/Seoul")
 # source 허용 값 목록
 # 매수: ENTRY_30MIN(목표가30분) / ENTRY_S1(20일신고가) / ENTRY_S2(55일신고가) / PYRAMID(피라미딩)
 # 매도: EXIT_STOP(2N하드손절) / EXIT_10LOW(10일신저가익절) / EXIT_5MA(5MA익절)
+# 수동: MANUAL_SYNC(잔고 자동 편입) / MANUAL_BUY(사용자 수동 매수) / MANUAL_SELL(사용자 수동 매도)
 VALID_SOURCES = {
     "ENTRY_30MIN", "ENTRY_S1", "ENTRY_S2",
     "PYRAMID",
     "EXIT_STOP", "EXIT_10LOW", "EXIT_5MA",
     "MANUAL_SYNC",
+    "MANUAL_BUY", "MANUAL_SELL",
 }
 
 # 포트폴리오 추이 시트 이름 (모드별 분리)
@@ -228,6 +230,29 @@ def _save_to_sheets(record: dict) -> bool:
 # 공개 함수 (단일 진입점)
 # ─────────────────────────────────────────
 
+def get_recorded_order_nos() -> set:
+    """trade_ledger.json 에 이미 기록된 order_no(주문 uuid) 집합을 반환한다.
+
+    수동 거래 자동 기록(balance_sync) 시,
+    "이미 기록된 자동매매 주문" 과 "처음 보는 수동 주문" 을 구분하기 위해 사용한다.
+    파일이 없거나 읽기 오류 시 빈 집합을 반환한다.
+    """
+    if not os.path.exists(LEDGER_FILE):
+        return set()
+    try:
+        with open(LEDGER_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, list):
+            return set()
+        return {
+            row.get("order_no", "")
+            for row in data
+            if isinstance(row, dict) and row.get("order_no")
+        }
+    except (json.JSONDecodeError, IOError):
+        return set()
+
+
 def append_trade(record: dict):
     """체결 원장에 새 거래를 기록한다 (단일 진입점).
 
@@ -284,6 +309,8 @@ def append_trade(record: dict):
             "EXIT_10LOW":  f"{_exit_pfx}(10일신저가)",
             "EXIT_5MA":    f"{_exit_pfx}(5MA)",
             "MANUAL_SYNC": "수동 동기화",
+            "MANUAL_BUY":  "수동 매수",
+            "MANUAL_SELL": f"수동 매도({_exit_pfx})",
         }.get(src, src)
 
         msg_lines = [

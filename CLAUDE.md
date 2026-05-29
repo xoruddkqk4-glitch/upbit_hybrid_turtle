@@ -47,7 +47,7 @@
 │   ├── indicator_calc.py    — ATR(N), 이동평균선(20MA, 5MA), 10일 신저가, N일 신고가
 │   ├── trade_ledger.py      — append_trade(record) 단일 진입점 + Google Sheets (SELL 시 포트폴리오 추이·손익차트 즉시 갱신)
 │   ├── telegram_alert.py    — SendMessage(msg) 단일 진입점
-│   ├── balance_sync.py      — 실행 시작 시 실제 잔고 ↔ held_coin_record.json 동기화 (수동 매수 코인 자동 편입)
+│   ├── balance_sync.py      — 실행 시작 시 실제 잔고 ↔ held_coin_record.json 동기화 (수동 매수 코인 자동 편입 + 수동 거래 시트 자동 기록)
 │   └── config.py            — LOVELY_COIN_LIST (고정 감시 목록)
 ├── [SA-MODULE-ENTRY]
 │   ├── target_manager.py    — 동적 목표가 산출, unheld_coin_record.json 관리
@@ -69,7 +69,7 @@
 | `config.py` | `get_watchlist()` — `LOVELY_COIN_LIST` 고정 목록 반환 |
 | `target_manager.py` | 터틀 S1/S2 신호 감지 및 미보유 코인 상태 관리 |
 | `timer_agent.py` | 터틀 신호 30분 가드 확인 + 진입 신호 산출 |
-| `balance_sync.py` | 실행 시작 시 실제 잔고 ↔ `held_coin_record.json` 동기화; 수동 매수 코인 발견 시 1회 알림 후 `MANUAL_SYNC` 로 자동 편입 |
+| `balance_sync.py` | 실행 시작 시 실제 잔고 ↔ `held_coin_record.json` 동기화; 수동 매수 코인 발견 시 1회 알림 후 `MANUAL_SYNC` 로 자동 편입. 잔고 불일치 발견 시 그 종목의 Upbit done 주문 중 ledger 에 없는 거래를 `MANUAL_BUY`/`MANUAL_SELL` 로 자동 시트 기록 (수동 매수일 땐 평균가·손절가·피라미딩가도 함께 재계산) |
 | `turtle_order_logic.py` | 리스크 기반 Unit 수량 계산, 피라미딩 주문 (`manual: true` 종목은 피라미딩 스킵) |
 | `risk_guardian.py` | 2N 하드 손절 및 트레일링 스탑 감시 |
 | `run_cache.py` | ATR 캐시 갱신 전담 스크립트 — KST 09:10 1회 실행, 일봉 지표를 `atr_cache.json` 에 저장 |
@@ -195,7 +195,7 @@
 - **시간:** 사용자-facing 은 **KST** (`pytz`)
 - **Upbit 접근:** `upbit_client` 만 경유 — 전략 파일에서 `pyupbit` 직접 호출 금지
 - **체결 원장:** `trade_ledger.append_trade(record)` 단일 진입점
-  `source` ∈ `ENTRY_30MIN` | `ENTRY_S1` | `ENTRY_S2` | `PYRAMID` | `EXIT_STOP` | `EXIT_10LOW` | `EXIT_5MA` | `MANUAL_SYNC`
+  `source` ∈ `ENTRY_30MIN` | `ENTRY_S1` | `ENTRY_S2` | `PYRAMID` | `EXIT_STOP` | `EXIT_10LOW` | `EXIT_5MA` | `MANUAL_SYNC` | `MANUAL_BUY` | `MANUAL_SELL`
 - **알림:** 텔레그램 봇 — `telegram_alert.SendMessage(msg)` 단일 모듈 경유
 - **보안:** 키·서비스계정 JSON 커밋 금지 (`.env`, `.gitignore`)
 - **실행:** 프로세스 내 상시 루프 금지. 스케줄링은 외부 `crontab` 이 담당.
@@ -267,5 +267,5 @@ python -c "import risk_guardian; risk_guardian.run_guardian()"
 
 ---
 
-> 마지막 업데이트: 2026-05-06 (ATR 캐시 갱신 로직을 `run_daily.py` 에서 분리 → `run_cache.py` (KST 09:10) 신규 추가. `run_daily.py` 는 KST 23:55 에 포트폴리오 스냅샷·손익차트만 담당)
+> 마지막 업데이트: 2026-05-29 (수동 매수·매도 거래도 잔고 불일치 발견 시 그 종목의 Upbit done 주문을 조회해 `MANUAL_BUY`/`MANUAL_SELL` 로 시트1 자동 기록. 수동 매수일 땐 `held_coin_record` 의 평균가·손절가·피라미딩가도 함께 재계산.)
 

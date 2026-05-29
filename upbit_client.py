@@ -566,6 +566,57 @@ def _get_execution_from_order(order_no: str, max_retries: int = 5, wait_sec: flo
     return (0.0, 0.0, 0.0)
 
 
+def get_execution_detail(order_no: str) -> tuple:
+    """주문 uuid 로 정확한 체결 수량·단가·수수료를 조회한다 (외부 공개 래퍼).
+
+    수동 거래 기록(balance_sync) 등에서 정확한 체결 단가가 필요할 때 사용한다.
+    내부적으로 trades 배열을 합산해 시장가/지정가 모두 정확한 단가를 계산한다.
+
+    Returns:
+        (executed_volume, executed_price, paid_fee)
+        조회 실패 시 (0.0, 0.0, 0.0)
+    """
+    return _get_execution_from_order(order_no)
+
+
+def fetch_recent_done_orders(ticker: str) -> list:
+    """해당 종목의 체결완료(done) 주문 목록을 받아온다.
+
+    수동 매수·매도가 발생했을 때, 자동매매가 낸 주문이 아닌
+    사용자가 직접 낸 주문을 찾아내기 위해 사용한다.
+    (잔고가 기록과 어긋난 종목에 대해서만 호출한다 — balance_sync.py)
+
+    Args:
+        ticker: 업비트 티커 (예: "KRW-BTC")
+
+    Returns:
+        list of dict — 각 항목 주요 필드:
+            "uuid":            주문 고유번호
+            "side":            "bid"(매수) / "ask"(매도)
+            "ord_type":        "limit" / "price"(시장가매수) / "market"(시장가매도)
+            "created_at":      주문 생성 시각 (ISO 8601)
+            "executed_volume": 체결 수량
+            "paid_fee":        지불 수수료
+            (※ 정확한 단가는 get_execution_detail(uuid) 로 별도 조회 권장)
+
+        조회 실패 또는 done 주문 없으면 빈 리스트.
+    """
+    _check_login()
+    if _upbit is None:
+        return []
+
+    try:
+        time.sleep(0.1)
+        raw = _upbit.get_order(ticker, state="done")
+        if not isinstance(raw, list):
+            return []
+        # dict 형태인 항목만 안전하게 필터링
+        return [v for v in raw if isinstance(v, dict)]
+    except Exception as e:
+        print(f"[upbit_client] 체결완료 주문 조회 오류 ({ticker}): {e}")
+        return []
+
+
 # ─────────────────────────────────────────
 # 주문
 # ─────────────────────────────────────────

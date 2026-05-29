@@ -19,6 +19,7 @@ import os
 from typing import Optional
 
 import indicator_calc
+import trade_ledger
 import upbit_client
 from telegram_alert import SendMessage
 
@@ -53,6 +54,140 @@ def _save_held_record(record: dict):
             json.dump(record, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"[balance_sync] held_coin_record.json 저장 오류: {e}")
+
+
+def _record_manual_trades(ticker: str, coin_name: str, ref_avg_price: float) -> list:
+    """그 종목의 Upbit done 주문 중 ledger 에 없는 주문을 '수동 거래'로 시트에 기록한다.
+
+    잔고 불일치 ①②③ 분기 안에서만 호출된다 (잔고 일치 시엔 호출 안 함).
+    같은 주문이 반복 기록되지 않도록 ledger 의 기존 order_no 와 대조한다.
+
+    Args:
+        ticker:        업비트 티커 (예: "KRW-BTC")
+        coin_name:     코인 이름 (예: "비트코인")
+        ref_avg_price: 매도 손익 계산용 기준 평균가
+                       (held_coin_record.json 의 avg_buy_price)
+
+    Returns:
+        시간 오름차순(오래된 것 → 최신순)으로 정렬된 수동 매수 정보 리스트:
+            [{"unit_price": float, "volume": float, "created_at": str}, ...]
+        평균가 재계산(③ 분기)에 사용된다. 수동 매수가 없으면 빈 리스트.
+    """
+    # ── 1. Upbit 에서 체결완료 주문 받아오기 ───────────────────────────────
+    done_orders = upbit_client.fetch_recent_done_orders(ticker)
+    if not done_orders:
+        return []
+
+    # ── 2. 이미 ledger 에 기록된 order_no 집합 ─────────────────────────────
+    recorded_set = trade_ledger.get_recorded_order_nos()
+
+    manual_buys = []   # ③ 평균가 재계산용으로 모아둠
+
+    # ── 3. ledger 에 없는 주문 = 수동 거래 → 각각 기록 ────────────────────
+    # 시간 오름차순 처리를 위해 created_at 기준으로 정렬한다
+    sorted_orders = sorted(done_orders, key=lambda o: o.get("created_at", ""))
+
+    for order in sorted_orders:
+        uuid_ = order.get("uuid", "")
+        if not uuid_ or uuid_ in recorded_set:
+            continue
+
+        # 정확한 체결 단가·수량·수수료를 trades 배열로 재계산
+        exec_vol, exec_price, paid_fee = upbit_client.get_execution_detail(uuid_)
+        if exec_vol <= 0 or exec_price <= 0:
+            print(f"[balance_sync] 수동 주문 체결 정보 확인 불가 → 스킵 (uuid={uuid_})")
+            continue
+
+        # Upbit side: "bid"=매수, "ask"=매도
+        side_raw = order.get("side", "")
+        if side_raw == "bid":
+            side_kor = "BUY"
+        elif side_raw == "ask":
+            side_kor = "SELL"
+        else:
+            print(f"[balance_sync] 알 수 없는 side='{side_raw}' → 스킵 (uuid={uuid_})")
+            continue
+
+        # ord_type: "limit"=지정가 / "price"=시장가매수 / "market"=시장가매도
+        ord_type_raw = str(order.get("ord_type", "")).lower()
+        order_type   = "LIMIT" if ord_type_raw == "limit" else "MARKET"
+
+        created_at = order.get("created_at", "")
+        gross      = exec_vol * exec_price
+
+        record = {
+            "side":       side_kor,
+            "ticker":     ticker,
+            "coin_name":  coin_name,
+            "volume":     exec_vol,
+            "unit_price": exec_price,
+            "fee":        paid_fee,
+            "order_no":   uuid_,
+            "order_type": order_type,
+            "source":     "MANUAL_BUY" if side_kor == "BUY" else "MANUAL_SELL",
+            "note":       f"수동 거래 (Upbit 주문시각: {created_at})",
+        }
+
+        # 매도일 경우: 손익은 기준 평균가(=held_coin_record 의 avg_buy_price) 로 계산
+        if side_kor == "SELL":
+            if ref_avg_price > 0:
+                profit_amount = (exec_price - ref_avg_price) * exec_vol - paid_fee
+                profit_rate   = (exec_price - ref_avg_price) * 100.0 / ref_avg_price
+                record["profit_rate"]   = profit_rate
+                record["profit_amount"] = profit_amount
+                record["net_amount"]    = gross - paid_fee
+
+        # ledger 시트에 기록 (텔레그램 알림·시트 갱신 자동 수행)
+        trade_ledger.append_trade(record)
+
+        # ③ 평균가 재계산용 — 수동 매수만 모아둔다
+        if side_kor == "BUY":
+            manual_buys.append({
+                "unit_price": exec_price,
+                "volume":     exec_vol,
+                "created_at": created_at,
+            })
+
+    return manual_buys
+
+
+def _apply_manual_buys_to_record(entry: dict, manual_buys: list, atr_n: float):
+    """수동 매수가 발생한 경우, held_coin_record 항목의 평균가·손절가·피라미딩가를 재계산한다.
+
+    호출 전제: ③ 수량 불일치 분기에서 manual_buys 가 비어있지 않을 때만 호출.
+
+    Args:
+        entry:       held_coin_record[ticker] dict (직접 수정됨)
+        manual_buys: _record_manual_trades 가 반환한 수동 매수 리스트
+        atr_n:       해당 종목의 현재 ATR(N) 값 (손절·피라미딩가 재계산용)
+    """
+    if not manual_buys:
+        return
+
+    # 기존 평균가·수량 (수동 매수 반영 전 기준)
+    old_avg = float(entry.get("avg_buy_price", 0))
+    old_vol = float(entry.get("total_volume", 0))
+
+    # 새 평균가 = (기존 평균가 × 기존 수량 + Σ(수동단가 × 수동수량)) / 새 총수량
+    total_cost = old_avg * old_vol
+    new_vol    = old_vol
+    for mb in manual_buys:
+        total_cost += mb["unit_price"] * mb["volume"]
+        new_vol    += mb["volume"]
+
+    new_avg = (total_cost / new_vol) if new_vol > 0 else old_avg
+
+    # last_buy_price: 가장 최신(=created_at 가장 큰) 수동 매수의 단가로 갱신
+    # manual_buys 는 _record_manual_trades 에서 오름차순 정렬되어 들어옴
+    last_buy_price = manual_buys[-1]["unit_price"]
+
+    # 손절가·다음 피라미딩가 재계산 (ATR 정상값이 있을 때만)
+    if atr_n > 0:
+        entry["stop_loss_price"]    = round(new_avg - 2.0 * atr_n, 8)
+        entry["next_pyramid_price"] = round(last_buy_price + 0.5 * atr_n, 8)
+
+    entry["avg_buy_price"]  = new_avg
+    entry["last_buy_price"] = last_buy_price
 
 
 def run_balance_sync(snapshot: Optional[dict] = None) -> bool:
@@ -111,9 +246,15 @@ def run_balance_sync(snapshot: Optional[dict] = None) -> bool:
     changed = False
 
     # ── ① 기록엔 있는데 실제로 없는 코인 → 기록 삭제 ─────────────────────
+    # 사용자가 수동으로 전량 매도한 경우가 대표적 → done 주문 중 ledger 에 없는 SELL 을 시트에 기록한다.
     for ticker in list(record.keys()):
         if ticker not in actual:
-            coin_name = ticker.replace("KRW-", "")
+            coin_name      = ticker.replace("KRW-", "")
+            ref_avg_price  = float(record[ticker].get("avg_buy_price", 0))
+
+            # 수동 매도 체결 내역을 시트에 기록 (있다면)
+            _record_manual_trades(ticker, coin_name, ref_avg_price)
+
             msg = (
                 f"⚠️ [잔고동기화] {coin_name}({ticker}) — "
                 f"실제 잔고 없음. 기록 삭제함."
@@ -127,9 +268,14 @@ def run_balance_sync(snapshot: Optional[dict] = None) -> bool:
     # 수동 매수 코인을 최초 발견 시 1회만 알림 발송하고 held_coin_record 에 추가한다.
     # 이후 실행에서는 기록이 있으므로 알림이 반복되지 않는다.
     # max_unit = 1 + manual = True 로 피라미딩을 막고, 매도 전략(2N·10일 신저가·5MA)만 적용한다.
+    # 또한 수동 매수 체결 내역을 시트에 기록한다 (기록되지 않은 done 주문이 있다면).
     for ticker, info in actual.items():
         if ticker not in record:
             avg_price = info.get("avg_price", 0.0) or info["current_price"]
+
+            # 수동 매수·매도 체결 내역을 시트에 기록 (있다면)
+            # 손익 기준 평균가는 Upbit 가 알려준 avg_price 사용 (편입 직전 기준)
+            _record_manual_trades(ticker, info["coin_name"], avg_price)
 
             # ATR 캐시에서 손절가 계산 (추가 API 호출 없음)
             try:
@@ -166,6 +312,8 @@ def run_balance_sync(snapshot: Optional[dict] = None) -> bool:
             SendMessage(msg)
 
     # ── ③ 둘 다 있는데 수량이 다른 코인 → total_volume 수정 ──────────────
+    # 수동 거래로 인한 수량 변화가 대표적이므로 done 주문 중 ledger 에 없는 BUY/SELL 을 시트에 기록한다.
+    # 또한 수동 매수가 발견되면 평균가·손절가·다음 피라미딩가도 함께 재계산한다.
     for ticker, info in actual.items():
         if ticker not in record:
             continue  # ②에서 이미 알림 발송 완료
@@ -174,10 +322,29 @@ def run_balance_sync(snapshot: Optional[dict] = None) -> bool:
         record_vol = float(record[ticker].get("total_volume", 0))
 
         if abs(actual_vol - record_vol) > _VOLUME_TOLERANCE:
+            # 수동 거래 체결 내역을 시트에 기록 + 수동 매수 정보 회수
+            ref_avg_price = float(record[ticker].get("avg_buy_price", 0))
+            manual_buys = _record_manual_trades(ticker, info["coin_name"], ref_avg_price)
+
+            # 수동 매수가 있었으면 held_coin_record 의 평균가·손절가·피라미딩가도 함께 갱신
+            if manual_buys:
+                try:
+                    indicators = indicator_calc.get_all_indicators(ticker)
+                    atr_n = indicators.get("atr", 0.0)
+                except Exception:
+                    atr_n = 0.0
+                _apply_manual_buys_to_record(record[ticker], manual_buys, atr_n)
+
             msg = (
                 f"⚠️ [잔고동기화] {info['coin_name']}({ticker}) 수량 불일치: "
                 f"기록 {record_vol:.8f} → 실제 {actual_vol:.8f} 으로 수정."
             )
+            if manual_buys:
+                msg += (
+                    f"\n수동 매수 {len(manual_buys)}건 반영 — "
+                    f"평균가 → {record[ticker]['avg_buy_price']:,.0f}원, "
+                    f"손절가 → {record[ticker]['stop_loss_price']:,.0f}원"
+                )
             print(msg)
             SendMessage(msg)
             record[ticker]["total_volume"] = actual_vol
