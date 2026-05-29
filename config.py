@@ -43,6 +43,7 @@ LOVELY_COIN_LIST: dict = {
     "KRW-SUI":   {"name": "수이",      "market": "KRW"},
     "KRW-XLM":   {"name": "스텔라루멘",  "market": "KRW"},
     "KRW-XRP":   {"name": "리플",        "market": "KRW"},
+    "KRW-TRX":   {"name": "트론",        "market": "KRW"}
 }
 
 
