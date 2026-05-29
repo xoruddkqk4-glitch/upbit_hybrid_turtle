@@ -56,7 +56,6 @@ def _resolve_service_account_path() -> str:
 SOURCE_SHEET_NAME_REAL = "포트폴리오 추이"
 PNL_SHEET_NAME_REAL    = "손익차트"
 PNL_HEADERS            = ["날짜", "당일 실현손익(원)", "누적 실현손익(원)"]
-CHART_TITLE_REAL       = "실현 손익 누적 차트"
 
 
 def _source_sheet_name() -> str:
@@ -67,13 +66,42 @@ def _pnl_sheet_name() -> str:
     return PNL_SHEET_NAME_REAL
 
 
-def _chart_title() -> str:
-    return CHART_TITLE_REAL
-
 # '포트폴리오 추이' 시트 열 이름 (trade_ledger.PORTFOLIO_HEADERS 와 일치해야 함)
 COL_TS_KST          = "기록시각(KST)"
 COL_REALIZED_PNL    = "실현손익(원)"
 COL_CUMULATIVE_PNL  = "누적수익금(원)"
+
+# ─────────────────────────────────────────
+# 1-B) 기간 단위 선택 관련 상수
+# ─────────────────────────────────────────
+# 손익차트의 X축을 일/주/월/분기/년 중 어떤 단위로 묶을지 표현하는 내부 코드.
+# 사용자에게는 시트의 K1 드롭다운에서 한글 라벨로 보여진다.
+PERIOD_DAY     = "DAY"
+PERIOD_WEEK    = "WEEK"
+PERIOD_MONTH   = "MONTH"
+PERIOD_QUARTER = "QUARTER"
+PERIOD_YEAR    = "YEAR"
+VALID_PERIODS  = [PERIOD_DAY, PERIOD_WEEK, PERIOD_MONTH, PERIOD_QUARTER, PERIOD_YEAR]
+
+# 시트의 K1 드롭다운 셀에 보일 한글 라벨 ↔ 내부 영문 코드 매핑
+PERIOD_LABEL_KOR = {
+    PERIOD_DAY:     "일",
+    PERIOD_WEEK:    "주",
+    PERIOD_MONTH:   "월",
+    PERIOD_QUARTER: "분기",
+    PERIOD_YEAR:    "년",
+}
+
+# 드롭다운/라벨 셀 좌표 (손익차트 시트 안)
+DROPDOWN_CELL_LABEL = "J1"   # "차트 단위" 라벨이 들어가는 셀
+DROPDOWN_CELL_VALUE = "K1"   # 사용자가 단위를 고르는 드롭다운 셀
+
+# 보조 단위 데이터의 헤더 (E~G열에 들어감)
+PNL_HEADERS_PERIOD = ["기간", "당일 실현손익(원)", "누적 실현손익(원)"]
+
+# 차트 제목 (역할 고정 라벨 — 단위가 바뀌어도 차트가 누적되지 않도록)
+CHART_TITLE_DAILY  = "실현 손익 누적 차트 (일 단위)"
+CHART_TITLE_PERIOD = "실현 손익 누적 차트 (선택 단위)"
 # ─────────────────────────────────────────
 # 1) Google Sheets 인증
 # ─────────────────────────────────────────
@@ -111,17 +139,40 @@ def _get_spreadsheet():
 
 
 def _get_worksheet(spreadsheet, title: str, create_if_missing: bool = False,
-                   rows: int = 1000, cols: int = 10):
-    """워크시트를 찾고 없으면 옵션에 따라 생성한다."""
+                   rows: int = 1000, cols: int = 15):
+    """워크시트를 찾고 없으면 옵션에 따라 생성한다.
+
+    cols 기본값 15: 손익차트는 A~G 데이터 + J~K 드롭다운/라벨 + K3/K29 차트 앵커까지
+    접근하려면 최소 11열 필요. 안전 마진을 두어 15열로 생성.
+    """
     import gspread
     try:
         return spreadsheet.worksheet(title)
     except gspread.WorksheetNotFound:
         if create_if_missing:
             ws = spreadsheet.add_worksheet(title=title, rows=rows, cols=cols)
-            print(f"[pnl_chart] '{title}' 워크시트 생성")
+            print(f"[pnl_chart] '{title}' 워크시트 생성 (rows={rows}, cols={cols})")
             return ws
         return None
+
+
+def _ensure_grid_capacity(worksheet, min_rows: int = 1000, min_cols: int = 15):
+    """워크시트의 행/컬럼 수가 기준 미만이면 확장한다.
+
+    이미 충분하면 아무 일도 하지 않는다. 기존에 좁게 만들어진 시트에서
+    K1 셀 접근·K3/K29 차트 임베드 오류를 방지한다.
+    """
+    try:
+        cur_rows = worksheet.row_count
+        cur_cols = worksheet.col_count
+        new_rows = max(cur_rows, min_rows)
+        new_cols = max(cur_cols, min_cols)
+        if new_rows != cur_rows or new_cols != cur_cols:
+            worksheet.resize(rows=new_rows, cols=new_cols)
+            print(f"[pnl_chart] '{worksheet.title}' 시트 크기 확장 "
+                  f"({cur_rows}x{cur_cols} → {new_rows}x{new_cols})")
+    except Exception as e:
+        print(f"[pnl_chart] 시트 크기 확장 오류(무시): {e}")
 
 
 # ─────────────────────────────────────────
@@ -267,37 +318,283 @@ def build_series_from_portfolio(rows: list) -> list:
 
 
 # ─────────────────────────────────────────
+# 2-B) 기간 단위 변환 — 일 단위 시계열을 주/월/분기/년 단위로 묶음
+# ─────────────────────────────────────────
+
+def _bucket_key(date_str: str, period: str) -> str:
+    """날짜 문자열을 기간 단위 키로 변환한다.
+
+    날짜 한 개가 들어오면, 그 날짜가 속한 기간(주/월/분기/년)을 식별하는
+    문자열 키를 돌려준다. 같은 기간에 속한 날짜들은 같은 키를 갖게 되므로,
+    이 키를 그룹화의 기준으로 사용할 수 있다.
+
+    Args:
+        date_str: 'YYYY-MM-DD' 형태의 날짜 문자열 (예: '2026-05-29')
+        period:   PERIOD_DAY/WEEK/MONTH/QUARTER/YEAR 중 하나
+
+    Returns:
+        단위별 키 문자열. 잘못된 입력이면 빈 문자열.
+          - 일:   '2026-05-29'
+          - 주:   '2026-W22'  (ISO 표준, 월요일 시작)
+          - 월:   '2026-05'
+          - 분기: '2026-Q2'   (1~3월=Q1, 4~6월=Q2, 7~9월=Q3, 10~12월=Q4)
+          - 년:   '2026'
+    """
+    if not date_str:
+        return ""
+    try:
+        dt = datetime.strptime(date_str, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return ""
+
+    if period == PERIOD_DAY:
+        return date_str
+    if period == PERIOD_WEEK:
+        # %G = ISO 연도(주가 속한 해), %V = ISO 주차 두 자리(01~53, 월요일 시작)
+        return dt.strftime("%G-W%V")
+    if period == PERIOD_MONTH:
+        return dt.strftime("%Y-%m")
+    if period == PERIOD_QUARTER:
+        q = (dt.month - 1) // 3 + 1
+        return f"{dt.year}-Q{q}"
+    if period == PERIOD_YEAR:
+        return dt.strftime("%Y")
+    # 알 수 없는 단위 → 일 단위로 폴백 (안전 기본값)
+    return date_str
+
+
+def build_period_series(daily_series: list, period: str) -> list:
+    """일 단위 시계열을 기간 단위(주/월/분기/년)로 묶은 새 시계열로 변환한다.
+
+    묶음 규칙:
+      - 당일 실현손익(daily_pnl) : 그 기간 내 일별 값들의 **합산**
+      - 누적 실현손익(cumulative_pnl) : 그 기간 내 **가장 마지막 날짜의 값**
+                                       (누적은 항상 가장 최신값을 보여주는 게 맞음)
+
+    Args:
+        daily_series: build_series_from_portfolio() 의 출력 형태.
+            [{"date": "2026-05-29",
+              "daily_pnl":      100.0,
+              "cumulative_pnl": 500.0}, ...]
+        period: PERIOD_* 상수 중 하나
+
+    Returns:
+        기간별 시계열 리스트:
+            [{"period_key":     "2026-W22",
+              "daily_pnl":      300.0,    # 그 기간 일별 합산
+              "cumulative_pnl": 900.0},   # 그 기간 마지막 날짜의 누적
+             ...]
+        - period == PERIOD_DAY → 입력을 그대로 통일된 키 이름으로 매핑해서 반환
+        - 빈 입력 → 빈 리스트
+        - 알 수 없는 단위 → 일 단위 폴백
+    """
+    if not daily_series:
+        return []
+
+    # 일 단위면 별도 그룹화 없이 키 이름만 통일해서 반환 (이후 시트 작성 시 형식 일관성 유지)
+    if period == PERIOD_DAY:
+        return [
+            {
+                "period_key":     s.get("date", ""),
+                "daily_pnl":      float(s.get("daily_pnl", 0) or 0),
+                "cumulative_pnl": float(s.get("cumulative_pnl", 0) or 0),
+            }
+            for s in daily_series
+        ]
+
+    # 기간 단위로 그룹화 — key별로 일별 합산 + 마지막 날짜의 누적값 추적
+    buckets = {}   # period_key -> {"daily_sum", "last_date", "last_cumulative"}
+    for s in daily_series:
+        date_str = s.get("date", "")
+        key = _bucket_key(date_str, period)
+        if not key:
+            continue   # 날짜 파싱 실패 행은 건너뜀
+
+        if key not in buckets:
+            buckets[key] = {
+                "daily_sum":       0.0,
+                "last_date":       "",
+                "last_cumulative": 0.0,
+            }
+        b = buckets[key]
+        b["daily_sum"] += float(s.get("daily_pnl", 0) or 0)
+        # 같은 기간 안에서 가장 늦은 날짜의 누적값을 그 기간의 누적값으로 사용
+        if date_str >= b["last_date"]:
+            b["last_date"]       = date_str
+            b["last_cumulative"] = float(s.get("cumulative_pnl", 0) or 0)
+
+    # 키 사전순 정렬 = 시간순 정렬
+    # (일 'YYYY-MM-DD', 주 'YYYY-Www', 월 'YYYY-MM', 분기 'YYYY-Qn', 년 'YYYY'
+    #  모든 형식에서 문자열 사전순이 시간순과 일치하도록 설계됨)
+    sorted_keys = sorted(buckets.keys())
+    return [
+        {
+            "period_key":     k,
+            "daily_pnl":      round(buckets[k]["daily_sum"], 2),
+            "cumulative_pnl": round(buckets[k]["last_cumulative"], 2),
+        }
+        for k in sorted_keys
+    ]
+
+
+# ─────────────────────────────────────────
+# 2-C) 드롭다운 셀 제어 — 사용자가 손익차트 시트에서 단위를 고르게 함
+# ─────────────────────────────────────────
+
+def _read_dropdown_period(worksheet) -> str:
+    """손익차트 시트의 K1 셀에서 사용자가 고른 단위(한글)를 읽어 영문 PERIOD_* 코드로 변환한다.
+
+    K1 이 비었거나 알 수 없는 값(직접 입력 등)이면 안전하게 PERIOD_DAY 로 폴백.
+    셀 읽기 자체가 실패해도 PERIOD_DAY 로 폴백하므로 진입점이 안전하게 진행된다.
+
+    Args:
+        worksheet: gspread Worksheet 객체 (손익차트 시트)
+
+    Returns:
+        PERIOD_DAY/WEEK/MONTH/QUARTER/YEAR 중 하나의 영문 코드 문자열.
+    """
+    try:
+        raw = worksheet.acell(DROPDOWN_CELL_VALUE).value
+    except Exception as e:
+        print(f"[pnl_chart] K1 셀 읽기 오류(일 단위로 폴백): {e}")
+        return PERIOD_DAY
+
+    label = (raw or "").strip()
+    if not label:
+        return PERIOD_DAY
+
+    # 한글 라벨 → 영문 코드 역매핑
+    for code, kor in PERIOD_LABEL_KOR.items():
+        if label == kor:
+            return code
+    # 알 수 없는 값(예: 사용자가 임의로 입력) → 안전하게 일 단위 폴백
+    return PERIOD_DAY
+
+
+def _install_dropdown_and_label(spreadsheet, worksheet, current_value: str):
+    """손익차트 시트에 차트 단위 라벨(J1)과 드롭다운(K1) 을 설치한다.
+
+    설치 내용:
+      - J1 셀: '차트 단위' 라벨 (안내용 텍스트)
+      - K1 셀: current_value 를 한글로 변환해 값으로 채움
+      - K1 셀에 데이터 검증(드롭다운) 규칙 부여 → 클릭 시 일/주/월/분기/년 5개 옵션 표시
+
+    같은 규칙을 반복 적용해도 부작용이 없도록(idempotent) 설계되어
+    매 갱신마다 안전하게 다시 호출 가능하다.
+    각 단계에서 오류가 발생해도 매매·차트 갱신 흐름을 차단하지 않도록 예외는 모두 흡수.
+
+    Args:
+        spreadsheet:    gspread Spreadsheet 객체 (batch_update 용)
+        worksheet:      gspread Worksheet 객체 (손익차트 시트)
+        current_value:  K1 에 복원할 단위 코드 (PERIOD_*).
+                        VALID_PERIODS 에 없으면 PERIOD_DAY 로 강제 보정.
+    """
+    # 1) J1 에 라벨 채우기
+    try:
+        worksheet.update(values=[["차트 단위"]],
+                         range_name=DROPDOWN_CELL_LABEL,
+                         value_input_option="RAW")
+    except Exception as e:
+        print(f"[pnl_chart] J1 라벨 쓰기 오류(무시): {e}")
+
+    # 2) K1 에 한글 단위명 채우기 (clear() 직후 복원 용도)
+    if current_value not in VALID_PERIODS:
+        current_value = PERIOD_DAY
+    kor_label = PERIOD_LABEL_KOR.get(current_value, PERIOD_LABEL_KOR[PERIOD_DAY])
+    try:
+        worksheet.update(values=[[kor_label]],
+                         range_name=DROPDOWN_CELL_VALUE,
+                         value_input_option="RAW")
+    except Exception as e:
+        print(f"[pnl_chart] K1 단위값 쓰기 오류(무시): {e}")
+
+    # 3) K1 셀에 데이터 검증(드롭다운) 규칙 설치
+    #    Google Sheets API 의 setDataValidation 을 사용.
+    #    K1 좌표 = (행 0, 열 10) — 0-indexed
+    sheet_id = worksheet.id
+    body = {
+        "requests": [{
+            "setDataValidation": {
+                "range": {
+                    "sheetId":          sheet_id,
+                    "startRowIndex":    0,  "endRowIndex":    1,
+                    "startColumnIndex": 10, "endColumnIndex": 11,
+                },
+                "rule": {
+                    "condition": {
+                        "type": "ONE_OF_LIST",
+                        "values": [
+                            {"userEnteredValue": PERIOD_LABEL_KOR[PERIOD_DAY]},
+                            {"userEnteredValue": PERIOD_LABEL_KOR[PERIOD_WEEK]},
+                            {"userEnteredValue": PERIOD_LABEL_KOR[PERIOD_MONTH]},
+                            {"userEnteredValue": PERIOD_LABEL_KOR[PERIOD_QUARTER]},
+                            {"userEnteredValue": PERIOD_LABEL_KOR[PERIOD_YEAR]},
+                        ],
+                    },
+                    "showCustomUi": True,   # 드롭다운 화살표 UI 표시
+                    "strict":       True,   # 다른 값 입력 시 거부
+                },
+            }
+        }]
+    }
+    try:
+        spreadsheet.batch_update(body)
+    except Exception as e:
+        print(f"[pnl_chart] K1 드롭다운 규칙 설치 오류(무시): {e}")
+
+
+# ─────────────────────────────────────────
 # 3) 손익차트 시트 갱신
 # ─────────────────────────────────────────
 
-def update_pnl_worksheet(series: list, spreadsheet) -> tuple:
-    """실현 손익 시계열을 '손익차트' 워크시트에 덮어쓴다.
+def update_pnl_worksheet(daily_series: list, period_series: list, period: str,
+                         spreadsheet, worksheet) -> bool:
+    """'손익차트' 워크시트의 데이터 영역을 갱신한다.
+
+    영역 구성:
+      - A~C 열: 일 단위 시계열 (항상 채워짐)
+      - E~G 열: 선택 단위 시계열 (period != DAY 일 때만, DAY 면 비움)
+      - J1: '차트 단위' 라벨
+      - K1: 사용자 선택 단위 (드롭다운) — clear() 직후 자동 복원
+
+    Args:
+        daily_series:  일 단위 시계열 (build_series_from_portfolio 출력)
+        period_series: 선택 단위 시계열 (build_period_series 출력)
+        period:        PERIOD_* 코드 — 현재 선택 단위
+        spreadsheet:   gspread Spreadsheet 객체
+        worksheet:     gspread Worksheet 객체 ('손익차트' 시트, 호출자가 보유)
 
     Returns:
-        (spreadsheet, worksheet) 튜플 또는 (None, None) (갱신 실패).
+        True 성공 / False 실패
     """
-    pnl_sheet = _pnl_sheet_name()
-    ws = _get_worksheet(spreadsheet, pnl_sheet, create_if_missing=True)
-    if ws is None:
-        return None, None
-
-    values = [PNL_HEADERS]
-    for item in series:
-        values.append([
-            item["date"],
-            item["daily_pnl"],
-            item["cumulative_pnl"],
-        ])
-
     try:
-        ws.clear()
-        ws.update(values=values, range_name="A1", value_input_option="RAW")
-        print(f"[pnl_chart] '{pnl_sheet}' 데이터 갱신 완료 ({len(series)}일)")
+        # 1) 시트 전체 비우기 (셀 값만 지워지고, 데이터 검증 규칙은 일부 유지될 수 있음)
+        worksheet.clear()
+
+        # 2) A1~C: 일 단위 데이터
+        daily_values = [PNL_HEADERS]
+        for item in daily_series:
+            daily_values.append([item["date"], item["daily_pnl"], item["cumulative_pnl"]])
+        worksheet.update(values=daily_values, range_name="A1", value_input_option="RAW")
+
+        # 3) E1~G: 선택 단위 데이터 (DAY 면 작성 생략 — 영역 빈 상태로 둠)
+        if period != PERIOD_DAY and period_series:
+            period_values = [PNL_HEADERS_PERIOD]
+            for item in period_series:
+                period_values.append([item["period_key"], item["daily_pnl"], item["cumulative_pnl"]])
+            worksheet.update(values=period_values, range_name="E1", value_input_option="RAW")
+
+        sec_count = 0 if period == PERIOD_DAY else len(period_series)
+        kor = PERIOD_LABEL_KOR.get(period, period)
+        print(f"[pnl_chart] '{_pnl_sheet_name()}' 데이터 갱신 완료 "
+              f"(일 {len(daily_series)}일, {kor} {sec_count}개)")
     except Exception as e:
         print(f"[pnl_chart] 워크시트 데이터 갱신 오류: {e}")
-        return None, None
+        return False
 
-    return spreadsheet, ws
+    # 4) 드롭다운/라벨 재설치 — clear() 로 K1 값이 지워졌으므로 현재 단위로 복원
+    _install_dropdown_and_label(spreadsheet, worksheet, period)
+    return True
 
 
 # ─────────────────────────────────────────
@@ -345,21 +642,39 @@ def _delete_chart_if_exists(spreadsheet, sheet_id: int, title: str):
         print(f"[pnl_chart] 기존 차트 삭제 실패(무시하고 계속): {e}")
 
 
-def embed_line_chart(spreadsheet, worksheet, series: list = None) -> bool:
-    """콤보 그래프(당일=파란 막대, 누적=빨간 선)를 단일 왼쪽 Y축으로 임베드한다.
+def _embed_one_chart(spreadsheet, worksheet, title: str, subtitle: str,
+                     bottom_axis_title: str,
+                     data_start_col: int, series: list,
+                     anchor_row: int, anchor_col: int) -> bool:
+    """콤보 차트(당일=파란 막대, 누적=빨간 선) 1개를 워크시트에 임베드한다.
 
-    두 시리즈 모두 왼쪽 축 하나를 공유하므로 0 기준선·눈금 간격이 자연히 일치한다.
+    차트 구성:
+      - X축(도메인): data_start_col 컬럼 (날짜 또는 기간 키)
+      - 막대 시리즈: data_start_col + 1 컬럼 (당일 실현손익)
+      - 선  시리즈: data_start_col + 2 컬럼 (누적 실현손익)
+      - 두 시리즈 모두 왼쪽 Y축 공유 → 0 기준선·눈금 간격이 자동 일치
+
+    같은 제목의 차트가 이미 있으면 먼저 삭제 후 재생성 (제목은 역할 고정 라벨).
+
+    Args:
+        title:             차트 제목 (CHART_TITLE_DAILY / CHART_TITLE_PERIOD)
+        subtitle:          차트 부제
+        bottom_axis_title: X축 제목 (예: "날짜" / "기간")
+        data_start_col:    데이터 시작 컬럼 (0-indexed). A=0, E=4.
+        series:            축 범위 계산용 시계열 (daily_pnl/cumulative_pnl 키 필요)
+        anchor_row:        차트 앵커 셀 행 (0-indexed)
+        anchor_col:        차트 앵커 셀 컬럼 (0-indexed)
+
+    Returns:
+        True 성공 / False 실패 (예외는 모두 흡수되어 호출자 흐름 방해 없음)
     """
-    sheet_id    = worksheet.id
-    chart_title = _chart_title()
-    subtitle    = "Upbit Hybrid Turtle · KRW 기준 (포트폴리오 추이 소스)"
+    sheet_id = worksheet.id
 
-    # 같은 제목 차트가 있으면 삭제 후 재생성
-    _delete_chart_if_exists(spreadsheet, sheet_id, chart_title)
+    # 같은 제목 차트가 있으면 먼저 삭제 (역할 고정 라벨이라 누적되지 않음)
+    _delete_chart_if_exists(spreadsheet, sheet_id, title)
 
     # 왼쪽 축 범위 계산 (두 시리즈 합산)
     l_min, l_max, _, _ = _calc_aligned_axis_bounds(series or [])
-
     left_axis = {"position": "LEFT_AXIS", "title": "실현손익(원)"}
     if l_min is not None:
         left_axis["viewWindowOptions"] = {
@@ -368,98 +683,94 @@ def embed_line_chart(spreadsheet, worksheet, series: list = None) -> bool:
             "viewWindowMax":  l_max,
         }
 
+    # 데이터 컬럼 범위 — 도메인/막대/선 각각 1열씩
+    domain_col = data_start_col
+    bar_col    = data_start_col + 1
+    line_col   = data_start_col + 2
+
     body = {
-        "requests": [
-            {
-                "addChart": {
-                    "chart": {
-                        "spec": {
-                            "title":    chart_title,
-                            "subtitle": subtitle,
-                            "basicChart": {
-                                "chartType":      "COMBO",
-                                "legendPosition": "TOP_LEGEND",
-                                "headerCount":    1,
-                                "axis": [
-                                    {"position": "BOTTOM_AXIS", "title": "날짜"},
-                                    left_axis,
-                                ],
-                                "domains": [{
-                                    "domain": {
+        "requests": [{
+            "addChart": {
+                "chart": {
+                    "spec": {
+                        "title":    title,
+                        "subtitle": subtitle,
+                        "basicChart": {
+                            "chartType":      "COMBO",
+                            "legendPosition": "TOP_LEGEND",
+                            "headerCount":    1,
+                            "axis": [
+                                {"position": "BOTTOM_AXIS", "title": bottom_axis_title},
+                                left_axis,
+                            ],
+                            "domains": [{
+                                "domain": {
+                                    "sourceRange": {
+                                        "sources": [{
+                                            "sheetId":          sheet_id,
+                                            "startRowIndex":    0,
+                                            "startColumnIndex": domain_col,
+                                            "endColumnIndex":   domain_col + 1,
+                                        }]
+                                    }
+                                }
+                            }],
+                            "series": [
+                                {
+                                    # 당일 실현손익 — 파란 막대
+                                    "series": {
                                         "sourceRange": {
                                             "sources": [{
                                                 "sheetId":          sheet_id,
                                                 "startRowIndex":    0,
-                                                "startColumnIndex": 0,
-                                                "endColumnIndex":   1,
+                                                "startColumnIndex": bar_col,
+                                                "endColumnIndex":   bar_col + 1,
                                             }]
                                         }
-                                    }
-                                }],
-                                "series": [
-                                    {
-                                        # 당일 실현손익 — 파란 막대, 왼쪽 Y축
-                                        "series": {
-                                            "sourceRange": {
-                                                "sources": [{
-                                                    "sheetId":          sheet_id,
-                                                    "startRowIndex":    0,
-                                                    "startColumnIndex": 1,
-                                                    "endColumnIndex":   2,
-                                                }]
-                                            }
-                                        },
-                                        "targetAxis": "LEFT_AXIS",
-                                        "type": "COLUMN",
-                                        "color": {
-                                            "red":   0.44,
-                                            "green": 0.68,
-                                            "blue":  0.84,
-                                        },
                                     },
-                                    {
-                                        # 누적 실현손익 — 빨간 선, 왼쪽 Y축 (단일 축)
-                                        "series": {
-                                            "sourceRange": {
-                                                "sources": [{
-                                                    "sheetId":          sheet_id,
-                                                    "startRowIndex":    0,
-                                                    "startColumnIndex": 2,
-                                                    "endColumnIndex":   3,
-                                                }]
-                                            }
-                                        },
-                                        "targetAxis": "LEFT_AXIS",
-                                        "type": "LINE",
-                                        "color": {
-                                            "red":   0.84,
-                                            "green": 0.18,
-                                            "blue":  0.18,
-                                        },
-                                    },
-                                ],
-                            },
-                        },
-                        "position": {
-                            "overlayPosition": {
-                                "anchorCell": {
-                                    "sheetId":     sheet_id,
-                                    "rowIndex":    1,
-                                    "columnIndex": 5,
+                                    "targetAxis": "LEFT_AXIS",
+                                    "type":  "COLUMN",
+                                    "color": {"red": 0.44, "green": 0.68, "blue": 0.84},
                                 },
-                                "widthPixels":  800,
-                                "heightPixels": 480,
-                            }
+                                {
+                                    # 누적 실현손익 — 빨간 선
+                                    "series": {
+                                        "sourceRange": {
+                                            "sources": [{
+                                                "sheetId":          sheet_id,
+                                                "startRowIndex":    0,
+                                                "startColumnIndex": line_col,
+                                                "endColumnIndex":   line_col + 1,
+                                            }]
+                                        }
+                                    },
+                                    "targetAxis": "LEFT_AXIS",
+                                    "type":  "LINE",
+                                    "color": {"red": 0.84, "green": 0.18, "blue": 0.18},
+                                },
+                            ],
                         },
-                    }
+                    },
+                    "position": {
+                        "overlayPosition": {
+                            "anchorCell": {
+                                "sheetId":     sheet_id,
+                                "rowIndex":    anchor_row,
+                                "columnIndex": anchor_col,
+                            },
+                            "widthPixels":  800,
+                            "heightPixels": 480,
+                        }
+                    },
                 }
             }
-        ]
+        }]
     }
 
     try:
         spreadsheet.batch_update(body)
-        print(f"[pnl_chart] '{chart_title}' 콤보 차트 임베드 완료 (당일=파란막대, 누적=빨간선, 단일 좌축)")
+        print(f"[pnl_chart] '{title}' 콤보 차트 임베드 완료 "
+              f"(앵커 row={anchor_row}, col={anchor_col})")
         return True
     except Exception as e:
         print(f"[pnl_chart] 차트 임베드 오류(무시하고 계속): {e}")
@@ -471,21 +782,38 @@ def embed_line_chart(spreadsheet, worksheet, series: list = None) -> bool:
 # ─────────────────────────────────────────
 
 def run_pnl_chart():
-    """run_daily.py 마지막 단계에서 호출하는 진입점.
+    """run_daily.py 와 trade_ledger.refresh_sheets_after_sell() 가 호출하는 진입점.
 
-    '포트폴리오 추이' 시트의 '실현손익(원)' 열을 시계열 소스로 삼아
-    '손익차트' 시트를 갱신하고, 최초 1회 차트를 삽입한다.
-
-    매도가 한 번도 없어 누적 실현손익이 0 이더라도, 일 스냅샷이 쌓인 날짜마다
-    (날짜, 0, 0) 로 점이 찍히므로 기준선 형태의 그래프가 정상 생성된다.
+    동작 흐름:
+      ① 스프레드시트 열기
+      ② '손익차트' 시트 가져오기 (없으면 생성)
+      ③ K1 셀에서 사용자가 고른 단위 읽기 (없으면 PERIOD_DAY)
+      ④ '포트폴리오 추이' 시트에서 일별 데이터 읽기
+      ⑤ 일 단위 시계열 → 선택 단위 시계열 변환
+      ⑥ 손익차트 시트의 A~C(일), E~G(선택) 영역 데이터 갱신 + 드롭다운 복원
+      ⑦ 메인 차트(일 단위) 임베드 — 항상
+      ⑧ 보조 차트(선택 단위) 임베드 — PERIOD_DAY 면 잔재만 제거하고 생성 안 함
     """
     source_sheet = _source_sheet_name()
     print(f"[pnl_chart] 실현 손익 차트 갱신 시작 (소스: '{source_sheet}' 시트)")
 
+    # ① 스프레드시트
     spreadsheet = _get_spreadsheet()
     if spreadsheet is None:
         return
 
+    # ② 손익차트 시트 (없으면 생성) — 데이터 갱신 전에 시트 존재 보장 + K1 읽기 위함
+    pnl_ws = _get_worksheet(spreadsheet, _pnl_sheet_name(), create_if_missing=True)
+    if pnl_ws is None:
+        return
+
+    # ②-B K1·K3·K29 영역 접근을 위해 시트 그리드 크기 보장 (기존 시트가 좁을 수 있음)
+    _ensure_grid_capacity(pnl_ws, min_rows=1000, min_cols=15)
+
+    # ③ K1 셀에서 현재 선택된 단위 읽기 (ws.clear() 전에 먼저 읽어야 함)
+    period = _read_dropdown_period(pnl_ws)
+
+    # ④ 소스 시트(포트폴리오 추이) 데이터
     source_ws = _get_worksheet(spreadsheet, source_sheet, create_if_missing=False)
     if source_ws is None:
         print(f"[pnl_chart] '{source_sheet}' 시트 없음 → 차트 갱신 스킵 "
@@ -502,21 +830,55 @@ def run_pnl_chart():
         print(f"[pnl_chart] '{source_sheet}' 시트에 데이터 없음 → 스킵")
         return
 
-    series = build_series_from_portfolio(records)
-    if not series:
+    # ⑤ 일 단위 시계열 + 선택 단위 시계열
+    daily_series = build_series_from_portfolio(records)
+    if not daily_series:
         print("[pnl_chart] 파싱 가능한 일자 데이터 없음 → 스킵")
         return
 
-    spreadsheet, worksheet = update_pnl_worksheet(series, spreadsheet)
-    if spreadsheet is None or worksheet is None:
+    period_series = build_period_series(daily_series, period)
+
+    # ⑥ 시트 데이터 갱신 (A~C 일, E~G 선택, K1 드롭다운 복원)
+    if not update_pnl_worksheet(daily_series, period_series, period, spreadsheet, pnl_ws):
         return
 
-    embed_line_chart(spreadsheet, worksheet, series)
+    # ⑦ 메인 차트 (일 단위) — 항상 임베드
+    _embed_one_chart(
+        spreadsheet, pnl_ws,
+        title             = CHART_TITLE_DAILY,
+        subtitle          = "Upbit Hybrid Turtle · KRW 기준 (포트폴리오 추이 소스)",
+        bottom_axis_title = "날짜",
+        data_start_col    = 0,    # A~C 컬럼
+        series            = daily_series,
+        anchor_row        = 2,    # K3 부근
+        anchor_col        = 10,
+    )
 
-    latest = series[-1]
-    print(f"[pnl_chart] 최종 — 기간 {series[0]['date']}~{latest['date']} | "
+    # ⑧ 보조 차트 (선택 단위) — DAY 면 잔재 제거, 그 외엔 임베드
+    if period == PERIOD_DAY:
+        _delete_chart_if_exists(spreadsheet, pnl_ws.id, CHART_TITLE_PERIOD)
+    else:
+        unit_kor = PERIOD_LABEL_KOR[period]
+        # 차트 도메인은 시트 E열을 읽으므로, 축 범위 계산용 series 만 만들어 전달
+        sec_series = [
+            {"daily_pnl": s["daily_pnl"], "cumulative_pnl": s["cumulative_pnl"]}
+            for s in period_series
+        ]
+        _embed_one_chart(
+            spreadsheet, pnl_ws,
+            title             = CHART_TITLE_PERIOD,
+            subtitle          = f"{unit_kor} 단위로 묶음 (Upbit Hybrid Turtle · KRW 기준)",
+            bottom_axis_title = "기간",
+            data_start_col    = 4,    # E~G 컬럼
+            series            = sec_series,
+            anchor_row        = 28,   # K29 부근 (메인 차트 480px ≈ 24행 아래)
+            anchor_col        = 10,
+        )
+
+    latest = daily_series[-1]
+    print(f"[pnl_chart] 최종 — 기간 {daily_series[0]['date']}~{latest['date']} | "
           f"누적 실현손익: {latest['cumulative_pnl']:+,.0f}원 "
-          f"({len(series)}일, 최근 당일 {latest['daily_pnl']:+,.0f}원)")
+          f"({len(daily_series)}일, 최근 당일 {latest['daily_pnl']:+,.0f}원, 단위={period})")
 
 
 if __name__ == "__main__":
