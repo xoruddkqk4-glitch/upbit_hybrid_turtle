@@ -35,6 +35,7 @@ import indicator_calc
 import risk_guardian
 import target_manager
 import timer_agent
+import trade_ledger
 import turtle_order_logic
 import upbit_client
 from config import get_watchlist
@@ -220,6 +221,20 @@ def main():
         print(msg)
         SendMessage(msg)
     _step_done(t, "STEP 5: 주문 실행")
+
+    # ─────────────────────────────────────
+    # STEP 6: 당일 실현손익 갱신
+    # '체결기록' 시트의 오늘 SELL 수익금 합계를 '포트폴리오 추이' 에 반영한다.
+    # 매도가 없으면 자동으로 스킵되므로 불필요한 Sheets 쓰기가 발생하지 않는다.
+    # ─────────────────────────────────────
+    t = _step_start("STEP 6: 실현손익 갱신")
+    try:
+        trade_ledger.update_realized_pnl_in_portfolio()
+    except Exception as e:
+        msg = f"⚠️ [run_all] 실현손익 갱신 오류 (계속 진행): {e}"
+        print(msg)
+        SendMessage(msg)
+    _step_done(t, "STEP 6: 실현손익 갱신")
 
     end_str = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n{'=' * 55}")
