@@ -292,7 +292,7 @@ run_all.py (crontab 이 주기적으로 호출)
 │   ├── indicator_calc.py    — ATR, 5/20MA, 10일 신저가, N일 신고가, 240분봉 20MA
 │   ├── trade_ledger.py      — 체결 원장 (단일 진입점) + Google Sheets
 │   ├── telegram_alert.py    — 텔레그램 알림 (단일 진입점)
-│   ├── balance_sync.py      — 실행 시작 시 실제 잔고 ↔ held_coin_record.json 동기화 + 수동 거래 시트 자동 기록
+│   ├── balance_sync.py      — 실행 시작 시 실제 잔고 ↔ held_coin_record.json 동기화 + 수동 거래 시트 자동 기록 (최근 15분 이내 주문만 탐지, 코인명 한글 표시)
 │   └── config.py            — LOVELY_COIN_LIST
 ├── [SA-MODULE-ENTRY] 진입 판정
 │   ├── target_manager.py    — 터틀 S1/S2 신호 감지, unheld_coin_record.json 관리
@@ -320,7 +320,7 @@ run_all.py (crontab 이 주기적으로 호출)
 | 파일 | 역할 |
 |------|------|
 | `run_all.py` | 통합 배치 실행기 |
-| `balance_sync.py` | 실행 시작 시 잔고 동기화; 수동 매수 코인 자동 편입(MANUAL_SYNC). 잔고 불일치 발견 시 그 종목의 Upbit done 주문 중 ledger 에 없는 거래를 `MANUAL_BUY`/`MANUAL_SELL` 로 시트1 자동 기록 (수동 매수일 땐 평균가·손절가·피라미딩가도 재계산) |
+| `balance_sync.py` | 실행 시작 시 잔고 동기화; 수동 매수 코인 자동 편입(MANUAL_SYNC). 잔고 불일치 발견 시 그 종목의 Upbit done 주문 중 **최근 15분 이내(crontab 주기 + 여유)** 이고 ledger 에 없는 거래를 `MANUAL_BUY`/`MANUAL_SELL` 로 시트1 자동 기록, 코인명은 한글로 표시 (수동 매수일 땐 평균가·손절가·피라미딩가도 재계산) |
 | `upbit_client.py` | Upbit Open API 래퍼 |
 | `myUpbit.py` | pyupbit 저수준 유틸 |
 | `indicator_calc.py` | 기술지표 계산 |

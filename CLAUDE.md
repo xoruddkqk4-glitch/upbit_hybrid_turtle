@@ -70,7 +70,7 @@
 | `config.py` | `get_watchlist()` — `LOVELY_COIN_LIST` 고정 목록 반환 |
 | `target_manager.py` | 터틀 S1/S2 신호 감지 + 눌림→재돌파 상태(peak) 관리 + unheld_coin_record.json 갱신 |
 | `timer_agent.py` | 눌림→재돌파 조건 확인 + 진입 신호 산출 |
-| `balance_sync.py` | 실행 시작 시 실제 잔고 ↔ `held_coin_record.json` 동기화; 수동 매수 코인 발견 시 1회 알림 후 `MANUAL_SYNC` 로 자동 편입. 잔고 불일치 발견 시 그 종목의 Upbit done 주문 중 ledger 에 없는 거래를 `MANUAL_BUY`/`MANUAL_SELL` 로 자동 시트 기록 (수동 매수일 땐 평균가·손절가·피라미딩가도 함께 재계산) |
+| `balance_sync.py` | 실행 시작 시 실제 잔고 ↔ `held_coin_record.json` 동기화; 수동 매수 코인 발견 시 1회 알림 후 `MANUAL_SYNC` 로 자동 편입. 잔고 불일치 발견 시 그 종목의 Upbit done 주문 중 **최근 15분 이내(crontab 주기 10분 + 여유 5분)** 이고 ledger 에 없는 거래를 `MANUAL_BUY`/`MANUAL_SELL` 로 자동 시트 기록 (코인명은 한글 `config.get_coin_name()` 사용; 수동 매수일 땐 평균가·손절가·피라미딩가도 함께 재계산) |
 | `turtle_order_logic.py` | 리스크 기반 Unit 수량 계산, 피라미딩 주문 (`manual: true` 종목은 피라미딩 스킵) |
 | `risk_guardian.py` | 2N 하드 손절 및 트레일링 스탑 감시 |
 | `run_cache.py` | ATR 캐시 갱신 전담 스크립트 — KST 09:10 1회 실행, 일봉 지표를 `atr_cache.json` 에 저장 |
@@ -272,5 +272,5 @@ python -c "import risk_guardian; risk_guardian.run_guardian()"
 
 ---
 
-> 마지막 업데이트: 2026-05-29 (진입 필터를 30분 가드에서 눌림→재돌파 방식으로 교체. target_manager.py 가 peak 상태(WATCHING/PULLBACK/entry_ready) 를 unheld_coin_record.json 에 저장하고, timer_agent.py 가 entry_ready 플래그를 읽어 진입 신호를 산출. `_since` 타임스탬프 필드 제거.)
+> 마지막 업데이트: 2026-05-30 (balance_sync.py 수동 거래 기록 개선: ① 수동 거래 코인명을 영문 코드에서 한글 이름으로 수정 (`config.get_coin_name()` 사용). ② 수동 거래 탐지 범위를 Upbit 전체 이력에서 최근 15분 이내로 축소 — crontab 주기 10분 + 여유 5분, `_is_recent_order()` 헬퍼로 `created_at` 기준 필터링.)
 

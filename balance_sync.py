@@ -16,11 +16,13 @@
 
 import json
 import os
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import indicator_calc
 import trade_ledger
 import upbit_client
+from config import get_coin_name
 from telegram_alert import SendMessage
 
 _DIR              = os.path.dirname(os.path.abspath(__file__))
@@ -32,6 +34,10 @@ _DUST_THRESHOLD_KRW = 5_000
 
 # 수량 허용 오차 — 소수점 8자리 코인의 미세 오차 무시
 _VOLUME_TOLERANCE = 1e-8
+
+# 수동 거래 조회 창 (분) — crontab 주기(10분) + 여유 5분
+# 직전 실행 이후에 생긴 거래만 수동 거래 후보로 보면 충분하다.
+_MANUAL_TRADE_LOOKBACK_MINUTES = 15
 
 
 def _load_held_record() -> dict:
@@ -56,6 +62,22 @@ def _save_held_record(record: dict):
         print(f"[balance_sync] held_coin_record.json 저장 오류: {e}")
 
 
+def _is_recent_order(created_at_str: str) -> bool:
+    """주문 생성 시각이 최근 _MANUAL_TRADE_LOOKBACK_MINUTES 분 이내인지 확인한다.
+
+    crontab 이 주기적으로 실행되므로, 직전 실행 이후에 생긴 주문만 수동 거래 후보다.
+    파싱 실패 시 True 를 반환해 안전하게 포함한다.
+    """
+    try:
+        dt = datetime.fromisoformat(created_at_str)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        cutoff = datetime.now(tz=timezone.utc) - timedelta(minutes=_MANUAL_TRADE_LOOKBACK_MINUTES)
+        return dt >= cutoff
+    except (ValueError, TypeError):
+        return True
+
+
 def _record_manual_trades(ticker: str, coin_name: str, ref_avg_price: float) -> list:
     """그 종목의 Upbit done 주문 중 ledger 에 없는 주문을 '수동 거래'로 시트에 기록한다.
 
@@ -75,6 +97,12 @@ def _record_manual_trades(ticker: str, coin_name: str, ref_avg_price: float) -> 
     """
     # ── 1. Upbit 에서 체결완료 주문 받아오기 ───────────────────────────────
     done_orders = upbit_client.fetch_recent_done_orders(ticker)
+    if not done_orders:
+        return []
+
+    # 직전 crontab 실행 이후(최근 15분 이내) 주문만 수동 거래 후보로 확인한다.
+    # 그 이전 주문은 직전 실행 때 이미 잔고에 반영돼 있으므로 수동 거래가 아니다.
+    done_orders = [o for o in done_orders if _is_recent_order(o.get("created_at", ""))]
     if not done_orders:
         return []
 
@@ -249,7 +277,7 @@ def run_balance_sync(snapshot: Optional[dict] = None) -> bool:
     # 사용자가 수동으로 전량 매도한 경우가 대표적 → done 주문 중 ledger 에 없는 SELL 을 시트에 기록한다.
     for ticker in list(record.keys()):
         if ticker not in actual:
-            coin_name      = ticker.replace("KRW-", "")
+            coin_name      = get_coin_name(ticker)
             ref_avg_price  = float(record[ticker].get("avg_buy_price", 0))
 
             # 수동 매도 체결 내역을 시트에 기록 (있다면)
@@ -275,7 +303,7 @@ def run_balance_sync(snapshot: Optional[dict] = None) -> bool:
 
             # 수동 매수·매도 체결 내역을 시트에 기록 (있다면)
             # 손익 기준 평균가는 Upbit 가 알려준 avg_price 사용 (편입 직전 기준)
-            _record_manual_trades(ticker, info["coin_name"], avg_price)
+            _record_manual_trades(ticker, get_coin_name(ticker), avg_price)
 
             # ATR 캐시에서 손절가 계산 (추가 API 호출 없음)
             try:
@@ -302,7 +330,7 @@ def run_balance_sync(snapshot: Optional[dict] = None) -> bool:
             changed = True
 
             msg = (
-                f"⚠️ [잔고동기화] {info['coin_name']}({ticker}) 수동 매수 코인 발견 — 전략 편입 완료\n"
+                f"⚠️ [잔고동기화] {get_coin_name(ticker)}({ticker}) 수동 매수 코인 발견 — 전략 편입 완료\n"
                 f"수량: {info['volume']:.8f}개\n"
                 f"평균 매입가: {avg_price:,.0f}원\n"
                 f"손절가: {stop_loss_str}\n"
@@ -324,7 +352,7 @@ def run_balance_sync(snapshot: Optional[dict] = None) -> bool:
         if abs(actual_vol - record_vol) > _VOLUME_TOLERANCE:
             # 수동 거래 체결 내역을 시트에 기록 + 수동 매수 정보 회수
             ref_avg_price = float(record[ticker].get("avg_buy_price", 0))
-            manual_buys = _record_manual_trades(ticker, info["coin_name"], ref_avg_price)
+            manual_buys = _record_manual_trades(ticker, get_coin_name(ticker), ref_avg_price)
 
             # 수동 매수가 있었으면 held_coin_record 의 평균가·손절가·피라미딩가도 함께 갱신
             if manual_buys:
@@ -336,7 +364,7 @@ def run_balance_sync(snapshot: Optional[dict] = None) -> bool:
                 _apply_manual_buys_to_record(record[ticker], manual_buys, atr_n)
 
             msg = (
-                f"⚠️ [잔고동기화] {info['coin_name']}({ticker}) 수량 불일치: "
+                f"⚠️ [잔고동기화] {get_coin_name(ticker)}({ticker}) 수량 불일치: "
                 f"기록 {record_vol:.8f} → 실제 {actual_vol:.8f} 으로 수정."
             )
             if manual_buys:
