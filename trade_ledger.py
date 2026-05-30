@@ -535,8 +535,97 @@ def calc_realized_pnl_total() -> int:
     return _calc_realized_pnl_total_legacy()
 
 
+def _calc_realized_pnl_today_from_sheets() -> "int | None":
+    """구글 시트 '체결기록'에서 오늘 날짜의 SELL 수익금 합계를 반환한다.
+
+    '기록시각(KST)' 컬럼이 오늘 날짜로 시작하고 '매수/매도'가 SELL인 행의
+    '수익금(원)' 값을 모두 더한다. 연결 실패 또는 컬럼 부재 시 None을 반환한다.
+    """
+    try:
+        import gspread
+        from oauth2client.service_account import ServiceAccountCredentials
+
+        json_path   = _resolve_service_account_path()
+        sheet_title = os.getenv("GOOGLE_SPREADSHEET_TITLE", "Upbit Hybrid Turtle Ledger")
+
+        if not os.path.exists(json_path):
+            return None
+
+        scope = [
+            "https://spreadsheets.google.com/feeds",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        creds  = ServiceAccountCredentials.from_json_keyfile_name(json_path, scope)
+        client = gspread.authorize(creds)
+
+        try:
+            spreadsheet = client.open(sheet_title)
+        except gspread.SpreadsheetNotFound:
+            return None
+
+        # 체결기록은 첫 번째 시트(sheet1) 에 저장된다
+        sheet      = spreadsheet.sheet1
+        all_values = sheet.get_all_values()
+
+        if len(all_values) < 2:
+            return 0
+
+        # 헤더 행에서 필요한 컬럼 위치를 확인한다
+        headers = all_values[0]
+        try:
+            ts_col   = headers.index("기록시각(KST)")
+            side_col = headers.index("매수/매도")
+            pnl_col  = headers.index("수익금(원)")
+        except ValueError:
+            print("[원장] 체결기록 시트에서 필요한 컬럼(기록시각/매수매도/수익금)을 찾지 못함 → JSON 폴백")
+            return None
+
+        today_str = datetime.now(KST).strftime("%Y-%m-%d")
+        total = 0.0
+        max_col = max(ts_col, side_col, pnl_col)
+
+        for row in all_values[1:]:  # 헤더 제외
+            if len(row) <= max_col:
+                continue
+            # 오늘 날짜가 아닌 행은 건너뛴다
+            if not str(row[ts_col]).startswith(today_str):
+                continue
+            # 매도(SELL) 가 아닌 행은 건너뛴다
+            if str(row[side_col]).upper() != "SELL":
+                continue
+            # "+1,234" 형태의 문자열을 숫자로 변환한다
+            pnl_str = str(row[pnl_col]).replace(",", "").replace("+", "").strip()
+            if not pnl_str:
+                continue
+            try:
+                total += float(pnl_str)
+            except ValueError:
+                continue
+
+        result = int(round(total))
+        print(f"[원장] 시트 기반 당일 실현손익 계산 완료: {result:+,}원")
+        return result
+
+    except ImportError:
+        return None
+    except Exception as e:
+        print(f"[원장] 시트 기반 당일 실현손익 계산 오류 → JSON 폴백: {e}")
+        return None
+
+
 def calc_realized_pnl_today() -> int:
-    """체결 원장 기준 당일 실현손익(원) 을 계산해 반환한다."""
+    """체결 원장 기준 당일 실현손익(원) 을 계산해 반환한다.
+
+    구글 시트 '체결기록'에서 오늘 날짜의 SELL 행 수익금(원)을 합산한다.
+    시트 연결에 실패하면 trade_ledger.json 기반으로 폴백한다.
+    """
+    # 구글 시트 '체결기록' 기반 합산 시도
+    sheets_result = _calc_realized_pnl_today_from_sheets()
+    if sheets_result is not None:
+        return sheets_result
+
+    # 폴백: trade_ledger.json 기반 계산
+    print("[원장] 시트 연결 실패 → trade_ledger.json 기반 당일 실현손익 계산")
     if not os.path.exists(LEDGER_FILE):
         return 0
     try:

@@ -272,5 +272,5 @@ python -c "import risk_guardian; risk_guardian.run_guardian()"
 
 ---
 
-> 마지막 업데이트: 2026-05-30 (balance_sync.py 수동 거래 기록 개선: ① 수동 거래 코인명을 영문 코드에서 한글 이름으로 수정 (`config.get_coin_name()` 사용). ② 수동 거래 탐지 범위를 Upbit 전체 이력에서 최근 15분 이내로 축소 — crontab 주기 10분 + 여유 5분, `_is_recent_order()` 헬퍼로 `created_at` 기준 필터링.)
+> 마지막 업데이트: 2026-05-30 (trade_ledger.py `calc_realized_pnl_today()` 개선: 구글 시트 '체결기록' 첫 번째 시트에서 오늘 날짜 SELL 행의 '수익금(원)' 컬럼을 합산해 당일 실현손익을 계산. 시트 연결 실패 시 `trade_ledger.json` 기반으로 폴백. 신규 내부 함수 `_calc_realized_pnl_today_from_sheets()` 추가.)
 
