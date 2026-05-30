@@ -12,7 +12,7 @@
 #   1-A. balance_sync — 실제 잔고 ↔ held_coin_record.json 동기화 (수동 매매 반영)
 #   2.   risk_guardian  — 기존 포지션 손절·익절 감시 (기존 자산 보호 최우선)
 #   3.   target_manager — 미보유 코인 터틀 신호(S1/S2) 갱신
-#   4.   timer_agent    — 30분 가드 체크 (진입 신호 코인 목록 생성)
+#   4.   timer_agent    — 눌림→재돌파 체크 (진입 신호 코인 목록 생성)
 #   5.   turtle_order_logic — 진입·피라미딩 주문 실행
 #
 # 매수/매도는 체결 시점에 turtle_order_logic · risk_guardian 에서
@@ -192,9 +192,9 @@ def main():
     _step_done(t, "STEP 3: 터틀 신호 갱신")
 
     # ─────────────────────────────────────
-    # STEP 4: 30분 가드 체크 (진입 신호 파악)
+    # STEP 4: 눌림→재돌파 체크 (진입 신호 파악)
     # ─────────────────────────────────────
-    t = _step_start("STEP 4: 30분 가드 체크")
+    t = _step_start("STEP 4: 눌림→재돌파 체크")
     entry_signals = []
     try:
         entry_signals = timer_agent.run_timer_check()
@@ -202,7 +202,7 @@ def main():
         msg = f"⚠️ [run_all] 타이머 체크 오류 (계속 진행): {e}"
         print(msg)
         SendMessage(msg)
-    _step_done(t, "STEP 4: 30분 가드 체크")
+    _step_done(t, "STEP 4: 눌림→재돌파 체크")
 
     # ─────────────────────────────────────
     # STEP 5: 진입·피라미딩 주문 실행
