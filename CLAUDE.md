@@ -6,7 +6,7 @@
 매매 전략: **터틀 트레이딩(자금 관리) + 눌림→재돌파(진입 검증) 하이브리드** 전략.
 
 실행 모델: **원샷(one-shot) 배치 스크립트**. AWS EC2 등의 서버에서
-`crontab` 으로 일정 간격(예: 5~15분)마다 `run_all.py` 를 호출한다.
+`crontab` 으로 10분마다 `run_all.py` 를 호출한다.
 프로세스 내부에서 `while True` 같은 상시 감시 루프는 돌지 않는다.
 
 ---
@@ -85,7 +85,7 @@
 | 파일 | 내용 |
 |------|------|
 | `unheld_coin_record.json` | 미보유 코인의 터틀 신호(`turtle_s1/s2_signal`) 및 눌림→재돌파 상태(`peak_price`, `peak_locked`, `entry_ready`) |
-| `held_coin_record.json` | 보유 코인의 Unit 수·마지막 매수가·평균단가·손절가·피라미딩 트리거가 |
+| `held_coin_record.json` | 보유 코인의 Unit 수·마지막 매수가·평균단가·손절가(트레일링)·최고가·피라미딩 트리거가 |
 | `trade_ledger.json` | 누적 체결 원장 (Google Sheets 동기화 대상) |
 | `daily_snapshot.json` | `run_daily.py` 의 하루 1회 포트폴리오 스냅샷 중복 방지 (`last_recorded_date` 필드). 매도 즉시 갱신 경로는 이 파일을 건드리지 않는다. |
 | `atr_cache.json` | 일봉 기반 지표(ATR·5MA·20MA·10일 신저가) 하루 1회 캐시 — `run_cache.py` (KST 09:10) 가 저장 |
@@ -157,8 +157,8 @@
 
 수익 보호와 손실 제한을 위해 트레일링 스탑과 하드 스탑을 병행한다.
 
-- **하드 손절 (2N Stop)**: 어느 Unit 이든 **평균 매입가 대비 2N 하락** 시 전량 즉시 매도.
-  (1차 진입 손절가 = 체결가 - 2N; 피라미딩 시 손절가 = 새 평균 매입가 - 2N 으로 갱신)
+- **트레일링 2N 손절**: 매 실행마다 `매수 후 최고가 - 2N` 을 손절가로 갱신. 가격이 올라갈수록 손절 기준도 함께 올라가 수익을 보호한다.
+  (매수 직후에는 체결가 = 최고가이므로 기존 2N 손절과 동일. 이후 가격이 오르면 최고가 기준으로 자동 트레일링.)
 - **트레일링 스탑**:
   - **10일 신저가 경신** → 추세 종료로 판단, 전량 청산.
   - **5MA 하향 돌파 + 평균 매입단가 초과** (수익권) → 기술적 익절.
@@ -249,14 +249,14 @@ cd upbit_hybrid_turtle
 pip install -r requirements.txt
 cp .env.example .env           # 값 채우기 (Upbit 키, 텔레그램, Google 등)
 
-# 1회 전체 파이프라인 실행 (crontab 으로 5~15분 간격 호출 권장)
+# 1회 전체 파이프라인 실행 (crontab 으로 10분 간격 호출 권장)
 python run_all.py
 ```
 
-**crontab 예시** (5분 간격):
+**crontab 예시** (10분 간격):
 
 ```cron
-*/5 * * * * cd /home/ubuntu/upbit_hybrid_turtle && /usr/bin/python3 run_all.py >> /home/ubuntu/upbit_hybrid_turtle/cron.log 2>&1
+*/10 * * * * cd /home/ubuntu/upbit_hybrid_turtle && /usr/bin/python3 run_all.py >> /home/ubuntu/upbit_hybrid_turtle/cron.log 2>&1
 ```
 
 **개별 모듈 실행** (디버깅용):
@@ -272,5 +272,5 @@ python -c "import risk_guardian; risk_guardian.run_guardian()"
 
 ---
 
-> 마지막 업데이트: 2026-05-30 (`calc_realized_pnl_today()` 개선: 구글 시트 '체결기록' 첫 번째 시트에서 오늘 날짜 SELL 행의 '수익금(원)'을 합산해 당일 실현손익 계산. 시트 연결 실패 시 `trade_ledger.json` 폴백. 포트폴리오 추이·손익차트 갱신은 기존대로 SELL 체결 시에만 `refresh_sheets_after_sell()` 경유.)
+> 마지막 업데이트: 2026-05-30 (2N 손절을 트레일링 방식으로 교체: `risk_guardian.py` 가 매 실행마다 `매수 후 최고가 - 2N` 으로 `stop_loss_price` 를 갱신. `held_coin_record.json` 에 `high_price_since_entry` 필드 추가. crontab 주기 10분으로 통일.)
 

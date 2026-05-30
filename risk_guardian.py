@@ -9,7 +9,7 @@
 # 두 가지 청산 조건:
 #
 #   [1] 하드 손절 (2N Stop — 최우선 처리)
-#       현재가 ≤ stop_loss_price (마지막 매수가 - 2 × ATR)
+#       현재가 ≤ stop_loss_price (매수 후 최고가 - 2 × ATR, 트레일링)
 #       → 추세 예측 실패 → 즉시 전량 매도
 #
 #   [2] 트레일링 스탑 (익절)
@@ -249,6 +249,14 @@ def run_guardian(balance: Optional[list] = None, indicators_map: Optional[dict] 
             print(f"[risk_guardian] {ticker} 지표 계산 오류: {e}")
             indicators = {}
 
+        # 매수 후 최고가 갱신 + 트레일링 2N 손절가 계산
+        atr_n = indicators.get("atr", 0.0)
+        if atr_n > 0:
+            new_high = max(pos.get("high_price_since_entry") or 0, current_price)
+            position_state[ticker]["high_price_since_entry"] = new_high
+            position_state[ticker]["stop_loss_price"] = new_high - 2.0 * atr_n
+            pos = position_state[ticker]  # 갱신된 값 참조
+
         # 3가지 매도 기준 가격 후보 수집 (가격이 위에 있을수록 먼저 발동)
         avg_buy_price   = pos.get("avg_buy_price", 0)
         stop_loss_price = pos.get("stop_loss_price", 0)
@@ -289,6 +297,7 @@ def run_guardian(balance: Optional[list] = None, indicators_map: Optional[dict] 
         # ① 하드 손절 먼저 확인
         if check_hard_stop(ticker, current_price, pos):
             place_exit_order(ticker, sellable_qty, "2N 하드 손절", current_price)
+            position_state.pop(ticker, None)  # 루프 끝 저장 때 재등록 방지
             continue
 
         # ② 트레일링 스탑 확인 (지표는 위에서 이미 계산됨)
@@ -296,7 +305,10 @@ def run_guardian(balance: Optional[list] = None, indicators_map: Optional[dict] 
             exit_reason = check_trailing_stop(ticker, current_price, pos, indicators)
             if exit_reason:
                 place_exit_order(ticker, sellable_qty, exit_reason, current_price)
+                position_state.pop(ticker, None)  # 루프 끝 저장 때 재등록 방지
         except Exception as e:
             print(f"[risk_guardian] {ticker} 트레일링 스탑 확인 오류: {e}")
 
+    # 청산되지 않은 코인들의 갱신된 최고가·손절가 저장
+    save_position_state(position_state)
     print("[risk_guardian] 손절·익절 감시 완료")

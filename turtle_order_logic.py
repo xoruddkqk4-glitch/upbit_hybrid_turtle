@@ -241,15 +241,16 @@ def place_entry_order(
 
     position_state = load_position_state()
     position_state[ticker] = {
-        "current_unit":          1,
-        "last_buy_price":        executed_price,
-        "avg_buy_price":         executed_price,
-        "stop_loss_price":       stop_loss_price,
-        "next_pyramid_price":    next_pyramid_price,
-        "max_unit":              max_unit,
-        "total_volume":          executed_volume,
-        "entry_source":          entry_source,
-        "effective_risk_factor": effective_risk_factor,
+        "current_unit":           1,
+        "last_buy_price":         executed_price,
+        "avg_buy_price":          executed_price,
+        "stop_loss_price":        stop_loss_price,
+        "high_price_since_entry": executed_price,   # 트레일링 2N 손절 기준 최고가
+        "next_pyramid_price":     next_pyramid_price,
+        "max_unit":               max_unit,
+        "total_volume":           executed_volume,
+        "entry_source":           entry_source,
+        "effective_risk_factor":  effective_risk_factor,
     }
     save_position_state(position_state)
 
