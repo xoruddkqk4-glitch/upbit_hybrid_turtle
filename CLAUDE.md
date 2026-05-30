@@ -272,5 +272,5 @@ python -c "import risk_guardian; risk_guardian.run_guardian()"
 
 ---
 
-> 마지막 업데이트: 2026-05-30 (실현손익 갱신 흐름 개선: `trade_ledger.update_realized_pnl_in_portfolio()` 추가 — '체결기록' 시트의 오늘 SELL 수익금을 합산해 '포트폴리오 추이' G·J열을 갱신, 당일 매도 없으면 스킵. `run_all.py` STEP 6로 매 실행 시 호출. `calc_realized_pnl_today()`는 구글 시트 기반 합산 + JSON 폴백 유지.)
+> 마지막 업데이트: 2026-05-30 (`calc_realized_pnl_today()` 개선: 구글 시트 '체결기록' 첫 번째 시트에서 오늘 날짜 SELL 행의 '수익금(원)'을 합산해 당일 실현손익 계산. 시트 연결 실패 시 `trade_ledger.json` 폴백. 포트폴리오 추이·손익차트 갱신은 기존대로 SELL 체결 시에만 `refresh_sheets_after_sell()` 경유.)
 

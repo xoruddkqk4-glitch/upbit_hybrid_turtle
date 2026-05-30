@@ -656,32 +656,6 @@ def calc_realized_pnl_today() -> int:
     return int(round(total))
 
 
-def update_realized_pnl_in_portfolio():
-    """당일 실현손익·누적수익금을 '포트폴리오 추이' 시트에 즉시 반영한다.
-
-    '체결기록' 시트의 오늘 SELL 수익금 합계를 구해 '포트폴리오 추이' G·J열을 갱신한다.
-    당일 실현손익이 0이면 (오늘 매도 없음) 시트 쓰기를 건너뛴다.
-    run_all.py 마지막 단계에서 매 실행마다 호출해 실현손익을 항상 최신으로 유지한다.
-    """
-    try:
-        realized_pnl_daily = calc_realized_pnl_today()
-        # 오늘 매도가 없으면 0원이므로 불필요한 시트 갱신을 생략한다
-        if realized_pnl_daily == 0:
-            print("[원장] 당일 실현손익 0원 → 포트폴리오 추이 갱신 스킵")
-            return
-        cumulative_profit = calc_realized_pnl_total()
-        _upsert_portfolio_direct(
-            total_value        = 0,
-            realized_pnl_daily = realized_pnl_daily,
-            cumulative_profit  = cumulative_profit,
-            intraday_minimal   = True,
-        )
-        print(f"[원장] 포트폴리오 실현손익 갱신 완료 "
-              f"— 당일: {realized_pnl_daily:+,}원, 누적: {cumulative_profit:+,}원")
-    except Exception as e:
-        print(f"[원장] 포트폴리오 실현손익 갱신 오류 (무시하고 계속): {e}")
-
-
 def _load_daily_snapshot() -> dict:
     """daily_snapshot.json 을 읽어 반환한다."""
     if os.path.exists(DAILY_SNAPSHOT_FILE):
