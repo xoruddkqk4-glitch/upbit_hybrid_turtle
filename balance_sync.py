@@ -211,11 +211,12 @@ def _apply_manual_buys_to_record(entry: dict, manual_buys: list, atr_n: float):
 
     # 손절가·다음 피라미딩가 재계산 (ATR 정상값이 있을 때만)
     if atr_n > 0:
-        entry["stop_loss_price"]    = round(new_avg - 2.0 * atr_n, 8)
+        entry["stop_loss_price"]    = round(last_buy_price - 2.0 * atr_n, 8)
         entry["next_pyramid_price"] = round(last_buy_price + 0.5 * atr_n, 8)
 
     entry["avg_buy_price"]  = new_avg
     entry["last_buy_price"] = last_buy_price
+    entry["high_price_since_entry"] = max(entry.get("high_price_since_entry") or 0.0, last_buy_price)
 
 
 def run_balance_sync(snapshot: Optional[dict] = None) -> bool:
@@ -321,6 +322,7 @@ def run_balance_sync(snapshot: Optional[dict] = None) -> bool:
                 "last_buy_price":     avg_price,
                 "avg_buy_price":      avg_price,
                 "stop_loss_price":    stop_loss,
+                "high_price_since_entry": avg_price,
                 "next_pyramid_price": avg_price * 10,    # max_unit=1 로 피라미딩 차단; 방어용 높은 값
                 "max_unit":           1,
                 "total_volume":       info["volume"],

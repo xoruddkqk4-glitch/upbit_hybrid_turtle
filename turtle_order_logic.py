@@ -354,7 +354,7 @@ def place_pyramid_order(ticker: str, volume: float, krw_amount: float,
     )
 
     new_unit              = current_unit + 1
-    new_stop_loss_price   = new_avg_price - 2.0 * atr_n   # 평균 매입가 기준 (최근 매수가 기준 오류 수정)
+    new_stop_loss_price   = executed_price - 2.0 * atr_n   # 최근 매수가(체결가) 기준
     new_next_pyramid      = executed_price + 0.5 * atr_n
 
     position_state[ticker].update({
