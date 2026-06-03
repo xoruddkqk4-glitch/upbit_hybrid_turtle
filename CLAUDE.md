@@ -72,7 +72,7 @@
 | `timer_agent.py` | 눌림→재돌파 조건 확인 + 진입 신호 산출 |
 | `balance_sync.py` | 실행 시작 시 실제 잔고 ↔ `held_coin_record.json` 동기화; 수동 매수 코인 발견 시 1회 알림 후 `MANUAL_SYNC` 로 자동 편입. 잔고 불일치 발견 시 그 종목의 Upbit done 주문 중 **최근 15분 이내(crontab 주기 10분 + 여유 5분)** 이고 ledger 에 없는 거래를 `MANUAL_BUY`/`MANUAL_SELL` 로 자동 시트 기록 (코인명은 한글 `config.get_coin_name()` 사용; 수동 매수일 땐 평균가·손절가·피라미딩가도 함께 재계산) |
 | `turtle_order_logic.py` | 리스크 기반 Unit 수량 계산, 피라미딩 주문 (`manual: true` 종목은 피라미딩 스킵) |
-| `risk_guardian.py` | 2N 하드 손절 및 트레일링 스탑 감시 |
+| `risk_guardian.py` | 2N 하드 손절 및 트레일링 스탑 감시 (5MA 익절은 어제 종가 기준·하루 1회) |
 | `run_cache.py` | ATR 캐시 갱신 전담 스크립트 — KST 09:10 1회 실행, 일봉 지표를 `atr_cache.json` 에 저장 |
 | `run_all.py` | 통합 배치 실행기 — 로그인 후 모든 모듈을 올바른 순서로 1회 실행 |
 | `.env` | API 키·텔레그램·Google 설정 (커밋 금지) |
@@ -88,7 +88,8 @@
 | `held_coin_record.json` | 보유 코인의 Unit 수·마지막 매수가·평균단가·손절가(트레일링)·최고가·피라미딩 트리거가 |
 | `trade_ledger.json` | 누적 체결 원장 (Google Sheets 동기화 대상) |
 | `daily_snapshot.json` | `run_daily.py` 의 하루 1회 포트폴리오 스냅샷 중복 방지 (`last_recorded_date` 필드). 매도 즉시 갱신 경로는 이 파일을 건드리지 않는다. |
-| `atr_cache.json` | 일봉 기반 지표(ATR·5MA·20MA·10일 신저가) 하루 1회 캐시 — `run_cache.py` (KST 09:10) 가 저장 |
+| `atr_cache.json` | 일봉 기반 지표(ATR·5MA·ma5_prev·20MA·10일 신저가·prev_close) 하루 1회 캐시 — `run_cache.py` (KST 09:10) 가 저장 |
+| `ma5_check_record.json` | 5MA 익절 "하루 1회" 가드 (`last_checked_date`). 그날 첫 실행에만 어제 종가 vs 5MA 비교를 수행하고 날짜를 기록 → 이후 실행은 5MA 익절 스킵 |
 
 ---
 
@@ -160,8 +161,11 @@
 - **트레일링 2N 손절**: 매 실행마다 `매수 후 최고가 - 2N` 을 손절가로 갱신. 가격이 올라갈수록 손절 기준도 함께 올라가 수익을 보호한다.
   (매수 직후에는 체결가 = 최고가이므로 기존 2N 손절과 동일. 이후 가격이 오르면 최고가 기준으로 자동 트레일링.)
 - **트레일링 스탑**:
-  - **10일 신저가 경신** → 추세 종료로 판단, 전량 청산.
-  - **5MA 하향 돌파 + 평균 매입단가 초과** (수익권) → 기술적 익절.
+  - **10일 신저가 경신** → 추세 종료로 판단, 전량 청산. (매 실행 실시간 감시)
+  - **어제 일봉 종가 < 5MA + 평균 매입단가 초과** (수익권) → 기술적 익절.
+    - 장중 휴쓰(whipsaw) 방지를 위해 **어제 확정 일봉 종가**(`prev_close`)를 **어제까지 5MA**(`ma5_prev`, 오늘 미완성 봉 제외)와 비교한다.
+    - 수익권 판단(`현재가 > avg_buy_price`)은 실시간 현재가로 한다.
+    - 어제 종가·5MA는 하루 동안 변하지 않으므로, 업비트 일봉이 확정되는 09:00 이후 **그날 첫 실행(09:06)에만 하루 1회** 판단한다 (`ma5_check_record.json` 가드). 나머지 시간엔 5MA 익절을 스킵하고 10일 신저가·2N 손절만 계속 감시한다.
 
 ---
 
@@ -273,4 +277,6 @@ python -c "import risk_guardian; risk_guardian.run_guardian()"
 ---
 
 > 마지막 업데이트: 2026-05-30 (2N 손절을 트레일링 방식으로 교체: `risk_guardian.py` 가 매 실행마다 `매수 후 최고가 - 2N` 으로 `stop_loss_price` 를 갱신. `held_coin_record.json` 에 `high_price_since_entry` 필드 추가. crontab 주기 10분으로 통일.)
+>
+> 추가 업데이트: 5MA 익절 조건을 **실시간 현재가 < 5MA** → **어제 확정 일봉 종가(`prev_close`) < 어제까지 5MA(`ma5_prev`)** 기준으로 변경. 장중 휴쓰 방지를 위해 해당 조건은 09:00 이후 그날 첫 실행(09:06)에만 하루 1회 평가 (`ma5_check_record.json` 가드). `indicator_calc.py` 에 `ma5_prev`·`prev_close` 지표 추가, `atr_cache.json` 캐싱에도 반영. 수익권 판단(현재가 > 평균매입가)은 실시간 현재가 유지. 10일 신저가·2N 하드손절은 기존처럼 매 실행 실시간 감시.
 

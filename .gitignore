@@ -9,6 +9,7 @@ trade_ledger.json
 daily_snapshot.json
 mock_balances.json
 atr_cache.json
+ma5_check_record.json
 
 # 파이썬 자동 생성 파일
 __pycache__/

@@ -14,10 +14,18 @@
 #
 #   [2] 트레일링 스탑 (익절)
 #       ① 10일 신저가 경신 → 무조건 청산
-#       ② 5MA 하향 돌파 (수익권일 때만) → 익절 청산
+#       ② 어제 일봉 종가 < 5MA (수익권일 때만) → 익절 청산
+#          · 장중 휴쓰(whipsaw) 방지를 위해 어제 확정 종가를 기준으로 판단한다.
+#          · 어제 종가·5MA는 하루 동안 변하지 않으므로, 업비트 일봉이 확정되는 09:00 이후
+#            그날 첫 실행(09:06)에만 한 번 판단한다 (ma5_check_record.json 가드).
 
+import json
+import os
 import time
+from datetime import datetime
 from typing import Optional
+
+import pytz
 
 import indicator_calc
 import telegram_alert
@@ -25,6 +33,44 @@ import trade_ledger
 import upbit_client
 from config import get_watchlist
 from turtle_order_logic import load_position_state, save_position_state
+
+KST = pytz.timezone("Asia/Seoul")
+
+# 5MA 익절 "하루 1회" 가드 파일 — 오늘 이미 5MA 익절 판단을 했는지 날짜로 기록
+_DIR                  = os.path.dirname(os.path.abspath(__file__))
+MA5_CHECK_RECORD_FILE = os.path.join(_DIR, "ma5_check_record.json")
+
+
+# ───────────────────────────────────
+# 5MA 익절 하루 1회 가드
+# ───────────────────────────────────
+
+def _is_ma5_check_done_today() -> bool:
+    """오늘 이미 5MA 익절 판단을 했는지 확인한다.
+
+    ma5_check_record.json 의 last_checked_date 가 오늘(KST) 이면 True.
+    어제 종가·5MA는 하루 동안 변하지 않으므로, 하루 첫 실행 때만 5MA 익절을 판단하고
+    그 이후 실행에서는 수익권 조건(현재가>평균가)의 장중 변동으로 인한 오판을 막는다.
+    """
+    if not os.path.exists(MA5_CHECK_RECORD_FILE):
+        return False
+    try:
+        with open(MA5_CHECK_RECORD_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        today = datetime.now(KST).strftime("%Y-%m-%d")
+        return data.get("last_checked_date") == today
+    except (json.JSONDecodeError, IOError):
+        return False
+
+
+def _mark_ma5_check_done_today():
+    """오늘 5MA 익절 판단을 완료했다고 ma5_check_record.json 에 기록한다."""
+    today = datetime.now(KST).strftime("%Y-%m-%d")
+    try:
+        with open(MA5_CHECK_RECORD_FILE, "w", encoding="utf-8") as f:
+            json.dump({"last_checked_date": today}, f, ensure_ascii=False, indent=2)
+    except IOError as e:
+        print(f"[risk_guardian] ma5_check_record.json 저장 오류: {e}")
 
 
 # ─────────────────────────────────────────
@@ -50,36 +96,46 @@ def check_hard_stop(ticker: str, current_price: float, pos: dict) -> bool:
     return False
 
 
-def check_trailing_stop(ticker: str, current_price: float, pos: dict, indicators: dict):
+def check_trailing_stop(ticker: str, current_price: float, pos: dict, indicators: dict,
+                        ma5_check_allowed: bool = True):
     """트레일링 스탑 조건을 확인한다.
 
-    조건 ①: 10일 신저가 경신 → 추세 종료, 무조건 청산
-    조건 ②: 5MA 하향 돌파 + 수익권 → 익절
+    조건 ①: 10일 신저가 경신 → 추세 종료, 무조건 청산 (매 실행 실시간)
+    조건 ②: 어제 일봉 종가 < 5MA + 수익권 → 익절 (하루 1회, ma5_check_allowed 일 때만)
+         - 추세 꼬임 판단은 어제 확정 종가(prev_close) vs 어제까지 5MA(ma5_prev) 로 한다.
+         - 수익권 판단(current_price > avg_buy_price)은 실시간 현재가로 한다.
+
+    Args:
+        ma5_check_allowed: True 일 때만 5MA 익절 조건을 평가한다 (하루 1회 가드).
 
     Returns:
         청산 이유 문자열 또는 None.
     """
     name          = get_watchlist().get(ticker, {}).get("name", ticker)
-    day10_low     = indicators.get("day10_low", 0.0)
-    ma5           = indicators.get("ma5",       0.0)
-    avg_buy_price = pos.get("avg_buy_price",    0.0)
+    day10_low     = indicators.get("day10_low",  0.0)
+    ma5_prev      = indicators.get("ma5_prev",   0.0)
+    prev_close    = indicators.get("prev_close", 0.0)
+    avg_buy_price = pos.get("avg_buy_price",     0.0)
 
-    # 조건 ①: 10일 신저가 경신
+    # 조건 ①: 10일 신저가 경신 (매 실행 실시간 감시)
     if day10_low > 0 and current_price <= day10_low:
         print(f"[risk_guardian] {name}({ticker}) 📉 10일 신저가 경신! "
               f"현재가 {current_price:,.0f}원 ≤ 10일 신저가 {day10_low:,.0f}원")
         return "10일 신저가 경신 익절"
 
-    # 조건 ②: 5MA 하향 돌파 (수익권일 때만)
-    if ma5 > 0 and current_price < ma5:
+    # 조건 ②: 어제 일봉 종가가 5MA 하향 돌파 (하루 1회·수익권일 때만)
+    if not ma5_check_allowed:
+        return None
+
+    if ma5_prev > 0 and prev_close > 0 and prev_close < ma5_prev:
         if avg_buy_price > 0 and current_price > avg_buy_price:
             profit_pct = (current_price - avg_buy_price) / avg_buy_price * 100
-            print(f"[risk_guardian] {name}({ticker}) 📉 5MA 하향 돌파 (수익권 익절)! "
-                  f"현재가 {current_price:,.0f}원 < 5MA {ma5:,.0f}원 "
-                  f"(수익률 +{profit_pct:.1f}%)")
+            print(f"[risk_guardian] {name}({ticker}) 📉 어제 종가 5MA 하향 돌파 (수익권 익절)! "
+                  f"어제종가 {prev_close:,.0f}원 < 5MA {ma5_prev:,.0f}원 "
+                  f"(현재 수익률 +{profit_pct:.1f}%)")
             return "5MA 하향 돌파 익절"
         elif avg_buy_price > 0 and current_price <= avg_buy_price:
-            print(f"[risk_guardian] {name}({ticker}) 5MA 아래지만 손실 구간 "
+            print(f"[risk_guardian] {name}({ticker}) 어제 종가 5MA 아래지만 손실 구간 "
                   f"→ 5MA 스탑 미적용 (하드 손절 대기)")
 
     return None
@@ -218,6 +274,14 @@ def run_guardian(balance: Optional[list] = None, indicators_map: Optional[dict] 
     position_state = load_position_state()
     watchlist      = get_watchlist()
 
+    # 5MA 익절 하루 1회 가드: 오늘 아직 5MA 판단을 안 했으면만 이번 실행에서 평가한다.
+    # 업비트 일봉이 확정되는 09:00 이후 그날 첫 실행(09:06)에만 어제 종가·5MA를 한 번 비교한다.
+    ma5_check_allowed = not _is_ma5_check_done_today()
+    if ma5_check_allowed:
+        print("[risk_guardian] 5MA 익절 판단: 오늘 첫 실행 → 어제 종가 vs 5MA 비교 수행")
+    else:
+        print("[risk_guardian] 5MA 익절 판단: 오늘 이미 수행됨 → 5MA 익절 조건 스킵 (10일신저가·2N손절은 계속 감시)")
+
     for item in balance:
         ticker        = item["ticker"]
         current_price = float(item["current_price"])
@@ -272,16 +336,16 @@ def run_guardian(balance: Optional[list] = None, indicators_map: Optional[dict] 
         avg_buy_price   = pos.get("avg_buy_price", 0)
         stop_loss_price = pos.get("stop_loss_price", 0)
         day10_low       = indicators.get("day10_low", 0) or 0
-        ma5             = indicators.get("ma5", 0)       or 0
+        ma5_prev        = indicators.get("ma5_prev", 0)  or 0
 
         sell_candidates = []
         if stop_loss_price > 0:
             sell_candidates.append(("2N 하드손절", stop_loss_price))
         if day10_low > 0:
             sell_candidates.append(("10일 신저가", day10_low))
-        # 5MA 익절은 평균가보다 ma5 가 높을 때만 발동 가능 (수익권 익절 조건)
-        if ma5 > 0 and avg_buy_price > 0 and ma5 > avg_buy_price:
-            sell_candidates.append(("5MA 익절", ma5))
+        # 5MA 익절은 하루 1회 허용 구간이고, 평균가보다 ma5_prev 가 높을 때만 표시 (수익권 익절 조건)
+        if ma5_check_allowed and ma5_prev > 0 and avg_buy_price > 0 and ma5_prev > avg_buy_price:
+            sell_candidates.append(("5MA 익절(어제종가기준)", ma5_prev))
 
         # 후보 중 가장 높은 가격 = 가장 먼저 발동될 매도 기준
         if sell_candidates:
@@ -313,7 +377,8 @@ def run_guardian(balance: Optional[list] = None, indicators_map: Optional[dict] 
 
         # ② 트레일링 스탑 확인 (지표는 위에서 이미 계산됨)
         try:
-            exit_reason = check_trailing_stop(ticker, current_price, pos, indicators)
+            exit_reason = check_trailing_stop(ticker, current_price, pos, indicators,
+                                              ma5_check_allowed=ma5_check_allowed)
             if exit_reason:
                 place_exit_order(ticker, sellable_qty, exit_reason, current_price)
                 position_state.pop(ticker, None)  # 루프 끝 저장 때 재등록 방지
@@ -322,4 +387,9 @@ def run_guardian(balance: Optional[list] = None, indicators_map: Optional[dict] 
 
     # 청산되지 않은 코인들의 갱신된 최고가·손절가 저장
     save_position_state(position_state)
+
+    # 오늘 5MA 익절 판단을 수행했으면 하루 1회 가드 기록 (이후 실행에서는 5MA 조건 스킵)
+    if ma5_check_allowed:
+        _mark_ma5_check_done_today()
+
     print("[risk_guardian] 손절·익절 감시 완료")

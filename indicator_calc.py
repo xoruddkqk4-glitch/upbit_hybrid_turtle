@@ -4,6 +4,8 @@
 # 터틀 트레이딩 전략에 필요한 지표들을 계산한다:
 #   - ATR(N): 평균 실제 범위 → Unit 수량 계산, 손절가, 피라미딩 트리거에 사용
 #   - 이동평균선(5MA, 20MA): 트레일링 스탑 판단에 사용
+#   - ma5_prev: 오늘 미완성 봉을 제외한 "어제까지의 5MA" → 5MA 익절(어제 종가 기준) 판단용
+#   - prev_close: 어제(직전 완성) 일봉 종가 → 5MA 익절(어제 종가 기준) 판단용
 #   - 10일 신저가: 트레일링 스탑 판단에 사용
 #
 # 본 모듈은 upbit_client.get_daily_chart 를 통해
@@ -179,16 +181,18 @@ def get_all_indicators(ticker: str) -> dict:
 
     Returns:
         {
-            "atr":       1200000.0,  # ATR(N): Unit 수량·손절가·피라미딩 트리거용
-            "ma5":       9400000.0,  # 5일 이동평균 (일봉 종가)
-            "ma20":      9300000.0,  # 20일 이동평균 (일봉 종가)
-            "day10_low": 9000000.0,  # 10일 신저가
+            "atr":        1200000.0,  # ATR(N): Unit 수량·손절가·피라미딩 트리거용
+            "ma5":        9400000.0,  # 5일 이동평균 (오늘 미완성 봉 포함, 호환 유지)
+            "ma5_prev":   9380000.0,  # 어제까지의 5MA (오늘 봉 제외) — 어제 종가 vs 5MA 비교용
+            "ma20":       9300000.0,  # 20일 이동평균 (일봉 종가)
+            "day10_low":  9000000.0,  # 10일 신저가
+            "prev_close": 9350000.0,  # 어제(직전 완성) 일봉 종가
         }
         데이터 부족 또는 오류 시 모든 값이 0 인 딕셔너리.
     """
     default   = {
-        "atr": 0.0, "ma5": 0.0, "ma20": 0.0, "day10_low": 0.0,
-        "s1_high": 0.0, "s2_high": 0.0,
+        "atr": 0.0, "ma5": 0.0, "ma5_prev": 0.0, "ma20": 0.0, "day10_low": 0.0,
+        "prev_close": 0.0, "s1_high": 0.0, "s2_high": 0.0,
     }
     now = datetime.now(_KST)
     # 업비트 일봉은 KST 09:00 에 갱신되므로 09:00 이전이면 전날 캐시도 유효하다
@@ -205,16 +209,20 @@ def get_all_indicators(ticker: str) -> dict:
 
         if (cached.get("date") == valid_date
                 and "s1_high" in cached
-                and "s2_high" in cached):
-            # s1_high/s2_high 필드 없는 구버전 캐시는 캐시 미스로 처리해 재계산
+                and "s2_high" in cached
+                and "prev_close" in cached
+                and "ma5_prev" in cached):
+            # s1_high/s2_high/prev_close/ma5_prev 필드 없는 구버전 캐시는 캐시 미스로 처리해 재계산
             print(f"[indicator] {ticker} 일봉 캐시 적중 ({valid_date}) — 일봉 API 생략")
             return {
-                "atr":       cached["atr"],
-                "ma5":       cached["ma5"],
-                "ma20":      cached["ma20"],
-                "day10_low": cached["day10_low"],
-                "s1_high":   float(cached.get("s1_high", 0.0)),
-                "s2_high":   float(cached.get("s2_high", 0.0)),
+                "atr":        cached["atr"],
+                "ma5":        cached["ma5"],
+                "ma5_prev":   float(cached.get("ma5_prev", 0.0)),
+                "ma20":       cached["ma20"],
+                "day10_low":  cached["day10_low"],
+                "prev_close": float(cached.get("prev_close", 0.0)),
+                "s1_high":    float(cached.get("s1_high", 0.0)),
+                "s2_high":    float(cached.get("s2_high", 0.0)),
             }
 
         # ── 캐시 미스: 일봉 새로 계산 (저장은 run_daily.py 담당) ────────
@@ -234,18 +242,24 @@ def get_all_indicators(ticker: str) -> dict:
         # 일봉 기반 지표 계산
         atr_val       = calc_atr(daily, period=20)
         ma5_val       = calc_ma(close_list, period=5)
+        # 오늘(미완성) 봉을 제외한 "어제까지의 5MA" — 어제 종가 vs 5MA 비교용
+        ma5_prev_val  = calc_ma(close_list[:-1], period=5)
         ma20_val      = calc_ma(close_list, period=20)
         day10_low_val = calc_10day_low(daily)
+        # 어제(직전 완성) 일봉 종가 — daily[-1]은 오늘 미완성 봉이므로 [-2]가 어제 확정 종가
+        prev_close_val = daily[-2]["close"] if len(daily) >= 2 else 0.0
         s1_high_val   = calc_n_day_high(daily, n=20)
         s2_high_val   = calc_n_day_high(daily, n=55)
 
         return {
-            "atr":       atr_val,
-            "ma5":       ma5_val,
-            "ma20":      ma20_val,
-            "day10_low": day10_low_val,
-            "s1_high":   s1_high_val,
-            "s2_high":   s2_high_val,
+            "atr":        atr_val,
+            "ma5":        ma5_val,
+            "ma5_prev":   ma5_prev_val,
+            "ma20":       ma20_val,
+            "day10_low":  day10_low_val,
+            "prev_close": prev_close_val,
+            "s1_high":    s1_high_val,
+            "s2_high":    s2_high_val,
         }
 
     except Exception as e:
@@ -278,13 +292,17 @@ def refresh_atr_cache(tickers: list):
             close_list = [d["close"] for d in daily]
 
             cache[ticker] = {
-                "date":      today_str,
-                "atr":       calc_atr(daily, period=20),
-                "ma5":       calc_ma(close_list, period=5),
-                "ma20":      calc_ma(close_list, period=20),
-                "day10_low": calc_10day_low(daily),
-                "s1_high":   calc_n_day_high(daily, n=20),
-                "s2_high":   calc_n_day_high(daily, n=55),
+                "date":       today_str,
+                "atr":        calc_atr(daily, period=20),
+                "ma5":        calc_ma(close_list, period=5),
+                # 오늘(미완성) 봉 제외한 어제까지의 5MA
+                "ma5_prev":   calc_ma(close_list[:-1], period=5),
+                "ma20":       calc_ma(close_list, period=20),
+                "day10_low":  calc_10day_low(daily),
+                # 어제(직전 완성) 일봉 종가
+                "prev_close": daily[-2]["close"] if len(daily) >= 2 else 0.0,
+                "s1_high":    calc_n_day_high(daily, n=20),
+                "s2_high":    calc_n_day_high(daily, n=55),
             }
             print(f"[indicator] {ticker} ATR 캐시 갱신 완료 "
                   f"(ATR={cache[ticker]['atr']:,.0f})")
@@ -341,8 +359,8 @@ def prefetch_indicators(tickers: list) -> dict:
         except Exception as e:
             print(f"[indicator] {ticker} 프리페치 오류: {e}")
             result[ticker] = {
-                "atr": 0.0, "ma5": 0.0, "ma20": 0.0, "day10_low": 0.0,
-                "s1_high": 0.0, "s2_high": 0.0,
+                "atr": 0.0, "ma5": 0.0, "ma5_prev": 0.0, "ma20": 0.0, "day10_low": 0.0,
+                "prev_close": 0.0, "s1_high": 0.0, "s2_high": 0.0,
             }
 
     print("[indicator] 지표 프리페치 완료")
