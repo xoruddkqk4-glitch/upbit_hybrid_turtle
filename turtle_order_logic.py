@@ -251,6 +251,8 @@ def place_entry_order(
         "total_volume":           executed_volume,
         "entry_source":           entry_source,
         "effective_risk_factor":  effective_risk_factor,
+        "tp_5_done":              False,
+        "tp_10_done":             False,
     }
     save_position_state(position_state)
 

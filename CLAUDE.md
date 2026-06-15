@@ -85,7 +85,7 @@
 | 파일 | 내용 |
 |------|------|
 | `unheld_coin_record.json` | 미보유 코인의 터틀 신호(`turtle_s1/s2_signal`) 및 눌림→재돌파 상태(`peak_price`, `peak_locked`, `entry_ready`) |
-| `held_coin_record.json` | 보유 코인의 Unit 수·마지막 매수가·평균단가·손절가(트레일링)·최고가·피라미딩 트리거가 |
+| `held_coin_record.json` | 보유 코인의 Unit 수·마지막 매수가·평균단가·손절가(트레일링)·최고가·피라미딩 트리거가·분할익절 완료플래그(`tp_5_done`, `tp_10_done`) |
 | `trade_ledger.json` | 누적 체결 원장 (Google Sheets 동기화 대상) |
 | `daily_snapshot.json` | `run_daily.py` 의 하루 1회 포트폴리오 스냅샷 중복 방지 (`last_recorded_date` 필드). 매도 즉시 갱신 경로는 이 파일을 건드리지 않는다. |
 | `atr_cache.json` | 일봉 기반 지표(ATR·5MA·ma5_prev·20MA·10일 신저가·prev_close) 하루 1회 캐시 — `run_cache.py` (KST 09:10) 가 저장 |
@@ -160,6 +160,10 @@
 
 - **트레일링 2N 손절**: 매 실행마다 `매수 후 최고가 - 2N` 을 손절가로 갱신. 가격이 올라갈수록 손절 기준도 함께 올라가 수익을 보호한다.
   (매수 직후에는 체결가 = 최고가이므로 기존 2N 손절과 동일. 이후 가격이 오르면 최고가 기준으로 자동 트레일링.)
+- **분할 익절**:
+  - **5% 분할 익절**: 평균 매입가 대비 수익률이 5% 이상 10% 미만일 때 보유량의 25% 시장가 매도. 포지션당 1회 제한 (`tp_5_done` 플래그).
+  - **10% 분할 익절**: 평균 매입가 대비 수익률이 10% 이상일 때 보유량의 33% 시장가 매도. 포지션당 1회 제한 (`tp_10_done` 플래그).
+  - **동시 충족 (갭상승 급등)**: 5% 익절 전에 바로 10% 이상으로 점프할 경우에도 10% 조건인 33%만 매도 처리하고 두 플래그 모두 `True` 설정하여 완료 처리.
 - **트레일링 스탑**:
   - **10일 신저가 경신** → 추세 종료로 판단, 전량 청산. (매 실행 실시간 감시)
   - **어제 일봉 종가 < 5MA + 평균 매입단가 초과** (수익권) → 기술적 익절.
@@ -204,7 +208,7 @@
 - **시간:** 사용자-facing 은 **KST** (`pytz`)
 - **Upbit 접근:** `upbit_client` 만 경유 — 전략 파일에서 `pyupbit` 직접 호출 금지
 - **체결 원장:** `trade_ledger.append_trade(record)` 단일 진입점
-  `source` ∈ `ENTRY_30MIN` | `ENTRY_S1` | `ENTRY_S2` | `PYRAMID` | `EXIT_STOP` | `EXIT_10LOW` | `EXIT_5MA` | `MANUAL_SYNC` | `MANUAL_BUY` | `MANUAL_SELL`
+  `source` ∈ `ENTRY_30MIN` | `ENTRY_S1` | `ENTRY_S2` | `PYRAMID` | `EXIT_STOP` | `EXIT_10LOW` | `EXIT_5MA` | `EXIT_TP_5` | `EXIT_TP_10` | `EXIT_TP_BOTH` | `MANUAL_SYNC` | `MANUAL_BUY` | `MANUAL_SELL`
 - **알림:** 텔레그램 봇 — `telegram_alert.SendMessage(msg)` 단일 모듈 경유
 - **보안:** 키·서비스계정 JSON 커밋 금지 (`.env`, `.gitignore`)
 - **실행:** 프로세스 내 상시 루프 금지. 스케줄링은 외부 `crontab` 이 담당.
@@ -279,4 +283,6 @@ python -c "import risk_guardian; risk_guardian.run_guardian()"
 > 마지막 업데이트: 2026-05-30 (2N 손절을 트레일링 방식으로 교체: `risk_guardian.py` 가 매 실행마다 `매수 후 최고가 - 2N` 으로 `stop_loss_price` 를 갱신. `held_coin_record.json` 에 `high_price_since_entry` 필드 추가. crontab 주기 10분으로 통일.)
 >
 > 추가 업데이트: 5MA 익절 조건을 **실시간 현재가 < 5MA** → **어제 확정 일봉 종가(`prev_close`) < 어제까지 5MA(`ma5_prev`)** 기준으로 변경. 장중 휴쓰 방지를 위해 해당 조건은 09:00 이후 그날 첫 실행(09:06)에만 하루 1회 평가 (`ma5_check_record.json` 가드). `indicator_calc.py` 에 `ma5_prev`·`prev_close` 지표 추가, `atr_cache.json` 캐싱에도 반영. 수익권 판단(현재가 > 평균매입가)은 실시간 현재가 유지. 10일 신저가·2N 하드손절은 기존처럼 매 실행 실시간 감시.
+>
+> 신규 기능 추가: 평균 매입가 대비 **5% 상승 시 보유 수량의 25%**, **10% 상승 시 남은 수량의 33% 분할 익절** 조건 추가. 갭상승 등으로 5% 익절을 거치지 않고 바로 10% 이상이 되는 경우에도 10% 조건인 33%만 익절 매도하고 두 조건 모두 `True` 설정(포지션당 최대 1회씩만 동작). `risk_guardian.py`, `turtle_order_logic.py`, `balance_sync.py`, `trade_ledger.py` 에 반영 완료.
 

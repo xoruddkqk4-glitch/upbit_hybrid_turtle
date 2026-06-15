@@ -43,11 +43,13 @@ KST = pytz.timezone("Asia/Seoul")
 # source 허용 값 목록
 # 매수: ENTRY_30MIN(목표가30분) / ENTRY_S1(20일신고가) / ENTRY_S2(55일신고가) / PYRAMID(피라미딩)
 # 매도: EXIT_STOP(2N하드손절) / EXIT_10LOW(10일신저가익절) / EXIT_5MA(5MA익절)
+#       EXIT_TP_5(5%분할익절) / EXIT_TP_10(10%분할익절) / EXIT_TP_BOTH(5%&10%동시분할익절)
 # 수동: MANUAL_SYNC(잔고 자동 편입) / MANUAL_BUY(사용자 수동 매수) / MANUAL_SELL(사용자 수동 매도)
 VALID_SOURCES = {
     "ENTRY_30MIN", "ENTRY_S1", "ENTRY_S2",
     "PYRAMID",
     "EXIT_STOP", "EXIT_10LOW", "EXIT_5MA",
+    "EXIT_TP_5", "EXIT_TP_10", "EXIT_TP_BOTH",
     "MANUAL_SYNC",
     "MANUAL_BUY", "MANUAL_SELL",
 }
@@ -308,6 +310,9 @@ def append_trade(record: dict):
             "EXIT_STOP":   "손절(2N하드)",
             "EXIT_10LOW":  f"{_exit_pfx}(10일신저가)",
             "EXIT_5MA":    f"{_exit_pfx}(5MA)",
+            "EXIT_TP_5":   "익절(5%분할)",
+            "EXIT_TP_10":  "익절(10%분할)",
+            "EXIT_TP_BOTH": "익절(5%&10%동시)",
             "MANUAL_SYNC": "수동 동기화",
             "MANUAL_BUY":  "수동 매수",
             "MANUAL_SELL": f"수동 매도({_exit_pfx})",

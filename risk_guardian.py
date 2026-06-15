@@ -252,6 +252,119 @@ def place_exit_order(ticker: str, volume: float, reason: str, current_price: flo
     )
 
 
+def place_partial_exit_order(ticker: str, volume: float, reason: str, tp_source: str,
+                             current_price: float = 0.0, mark_tp_5: bool = False, mark_tp_10: bool = False) -> bool:
+    """분할 매도 주문을 실행하고 포지션 정보를 부분 갱신한다."""
+    watchlist = get_watchlist()
+    if ticker not in watchlist:
+        held = load_position_state()
+        if ticker not in held:
+            print(f"[risk_guardian] {ticker} 감시 코인 외 + 보유 기록 없음 → 분할 매도 주문 거부")
+            return False
+
+    name = watchlist.get(ticker, {}).get("name", ticker)
+
+    if volume <= 0:
+        print(f"[risk_guardian] {name}({ticker}) 분할 매도 가능 수량=0 → 스킵")
+        return False
+
+    # 최소 주문 금액 안전장치 (업비트 5,000원 제한)
+    approx_krw = volume * (current_price or 1.0)
+    if approx_krw < 5000:
+        print(f"[risk_guardian] {name}({ticker}) 분할 익절 예정 금액({approx_krw:,.0f}원)이 "
+              f"업비트 최소 주문 금액 5,000원 미만 → 스킵")
+        return False
+
+    result = upbit_client.place_order(
+        ticker, volume=volume, side="SELL", order_type="MARKET",
+    )
+    if not result["success"]:
+        msg = (f"⚠️ 분할 익절 주문 실패\n"
+               f"코인: {name}({ticker})\n"
+               f"수량: {volume:.8f}\n"
+               f"사유: {reason}\n"
+               f"오류: {result['message']}")
+        print(f"[risk_guardian] {msg}")
+        telegram_alert.SendMessage(msg)
+        return False
+
+    order_no        = result["order_no"]
+    executed_price  = result.get("executed_price", current_price) or current_price
+    executed_volume = result.get("executed_volume", volume) or volume
+    paid_fee        = result.get("paid_fee", 0.0)  # Upbit 가 돌려준 실제 수수료
+
+    # held_coin_record 갱신 (수량 차감 및 플래그 세팅)
+    position_state = load_position_state()
+    if ticker in position_state:
+        pos = position_state[ticker]
+        old_vol = float(pos.get("total_volume", 0.0))
+        new_vol = max(0.0, old_vol - executed_volume)
+        pos["total_volume"] = new_vol
+        
+        if mark_tp_5:
+            pos["tp_5_done"] = True
+        if mark_tp_10:
+            pos["tp_10_done"] = True
+            
+        save_position_state(position_state)
+        avg_buy_price = pos.get("avg_buy_price", 0.0)
+    else:
+        avg_buy_price = 0.0
+
+    sell_price = executed_price
+
+    if avg_buy_price > 0 and sell_price > 0:
+        profit_rate = round((sell_price - avg_buy_price) / avg_buy_price * 100, 2)
+    else:
+        profit_rate = 0.0
+
+    # 실수령금액 = 매도 거래금액 - 수수료
+    gross_amount = round(sell_price * executed_volume, 0)
+    net_amount   = round(gross_amount - paid_fee, 0)
+
+    # 수익금 = (매도가 - 평균 매입가) × 수량 - 수수료
+    if avg_buy_price > 0:
+        profit_amount = round((sell_price - avg_buy_price) * executed_volume - paid_fee, 0)
+    else:
+        profit_amount = ""
+
+    trade_ledger.append_trade({
+        "side":          "SELL",
+        "ticker":        ticker,
+        "coin_name":     name,
+        "volume":        executed_volume,
+        "unit_price":    sell_price,
+        "order_no":      order_no,
+        "order_type":    "MARKET",
+        "source":        tp_source,
+        "fee":           paid_fee,
+        "net_amount":    net_amount,
+        "profit_rate":   profit_rate,
+        "profit_amount": profit_amount,
+        "note":          reason,
+    })
+
+    emoji = "💰" if profit_rate >= 0 else "🔴"
+    profit_sign = "+" if profit_rate >= 0 else ""
+
+    profit_amount_str = (
+        f"\n수익금: {int(profit_amount):+,}원"
+        if isinstance(profit_amount, (int, float)) else ""
+    )
+
+    telegram_alert.SendMessage(
+        f"{emoji} 포지션 분할 익절\n"
+        f"코인: {name}({ticker})\n"
+        f"수량: {executed_volume:.8f}개 매도\n"
+        f"평균 매입가: {avg_buy_price:,.0f}원 → 매도가: {sell_price:,.0f}원\n"
+        f"수익률: {profit_sign}{profit_rate:.2f}%"
+        f"{profit_amount_str}\n"
+        f"실수령금액: {int(net_amount):,}원\n"
+        f"사유: {reason}"
+    )
+    return True
+
+
 # ─────────────────────────────────────────
 # 메인 실행 함수
 # ─────────────────────────────────────────
@@ -368,6 +481,39 @@ def run_guardian(balance: Optional[list] = None, indicators_map: Optional[dict] 
               f"| 평균가: {avg_buy_price:,.0f}원 "
               f"| {sell_str} "
               f"| 다음피라미딩가: {pos.get('next_pyramid_price', 0):,.0f}원")
+
+        # ─────────────────────────────────────
+        # [분할 익절 판정] 5% 및 10% 분할 익절
+        # ─────────────────────────────────────
+        if avg_buy_price > 0:
+            tp_5_done = pos.get("tp_5_done", False)
+            tp_10_done = pos.get("tp_10_done", False)
+
+            # 1. 10% 이상 상승 구간
+            if profit_pct >= 10.0 and not tp_10_done:
+                # 갭상승 등으로 5% 익절을 거치지 않은 경우라도 10% 조건인 33%만 익절하고 두 플래그 모두 True 처리
+                sell_vol = sellable_qty * 0.33
+                success = place_partial_exit_order(
+                    ticker, sell_vol, "10% 달성 분할 익절", "EXIT_TP_10",
+                    current_price=current_price, mark_tp_5=True, mark_tp_10=True
+                )
+                if success:
+                    pos["tp_5_done"] = True
+                    pos["tp_10_done"] = True
+                    pos["total_volume"] = max(0.0, float(pos.get("total_volume", 0.0)) - sell_vol)
+                    sellable_qty = max(0.0, sellable_qty - sell_vol)
+
+            # 2. 5% 이상 10% 미만 상승 구간
+            elif profit_pct >= 5.0 and profit_pct < 10.0 and not tp_5_done:
+                sell_vol = sellable_qty * 0.25
+                success = place_partial_exit_order(
+                    ticker, sell_vol, "5% 달성 분할 익절", "EXIT_TP_5",
+                    current_price=current_price, mark_tp_5=True
+                )
+                if success:
+                    pos["tp_5_done"] = True
+                    pos["total_volume"] = max(0.0, float(pos.get("total_volume", 0.0)) - sell_vol)
+                    sellable_qty = max(0.0, sellable_qty - sell_vol)
 
         # ① 하드 손절 먼저 확인
         if check_hard_stop(ticker, current_price, pos):

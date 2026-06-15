@@ -328,6 +328,8 @@ def run_balance_sync(snapshot: Optional[dict] = None) -> bool:
                 "total_volume":       info["volume"],
                 "entry_source":       "MANUAL_SYNC",
                 "manual":             True,
+                "tp_5_done":          False,
+                "tp_10_done":         False,
             }
             changed = True
 
