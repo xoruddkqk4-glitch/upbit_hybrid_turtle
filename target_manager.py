@@ -81,44 +81,46 @@ def _update_peak_state(
     prev_peak: Optional[float],
     prev_locked: bool,
     current_price: float,
+    prev_peak_time: Optional[str],
+    now_str: str,
 ) -> tuple:
     """신호 변화와 현재가에 따라 peak 상태를 계산해서 반환한다.
 
     상태 흐름:
-      신호 꺼짐             → 전체 초기화 (peak=None, locked=False, ready=False)
-      신호 새로 켜짐        → WATCHING 시작 (peak=현재가, locked=False, ready=False)
-      WATCHING 중 상승      → peak 갱신 (ready=False)
-      WATCHING 중 눌림 시작 → PULLBACK 진입 (locked=True, ready=False)
-      PULLBACK 중 최고값 재돌파 → 진입 신호 (ready=True)
-      PULLBACK 중 대기      → 그대로 유지 (ready=False)
+      신호 꺼짐             → 전체 초기화 (peak=None, locked=False, ready=False, peak_time=None)
+      신호 새로 켜짐        → WATCHING 시작 (peak=현재가, locked=False, ready=False, peak_time=현재시간)
+      WATCHING 중 상승      → peak 갱신 (ready=False, peak_time=현재시간)
+      WATCHING 중 눌림 시작 → PULLBACK 진입 (locked=True, ready=False, peak_time 유지)
+      PULLBACK 중 최고값 재돌파 → 진입 신호 (ready=True, peak_time 유지)
+      PULLBACK 중 대기      → 그대로 유지 (ready=False, peak_time 유지)
 
     Returns:
-        (new_peak_price, new_peak_locked, entry_ready)
+        (new_peak_price, new_peak_locked, entry_ready, new_peak_time)
     """
     # 신호 꺼지면 전체 초기화
     if not new_signal:
-        return None, False, False
+        return None, False, False, None
 
     # 신호가 새로 켜진 경우 (False→True) 또는 peak 기록이 없는 경우
     if not prev_signal or prev_peak is None:
-        return current_price, False, False
+        return current_price, False, False, now_str
 
     # WATCHING 상태: 아직 잠금 전
     if not prev_locked:
         if current_price >= prev_peak:
             # 아직 상승 중 → 최고값 갱신
-            return current_price, False, False
+            return current_price, False, False, now_str
         else:
-            # 최초 눌림 감지 → 최고값 잠금 (PULLBACK 시작)
-            return prev_peak, True, False
+            # 최초 눌림 감지 → 최고값 잠금 (PULLBACK 시작), 고점 도달 시간 유지
+            return prev_peak, True, False, prev_peak_time
 
     # PULLBACK 상태: 최고값 잠금 후
     if current_price > prev_peak:
-        # 잠긴 최고값을 재돌파 → 진입 신호
-        return prev_peak, True, True
+        # 잠긴 최고값을 재돌파 → 진입 신호, 고점 도달 시간 유지
+        return prev_peak, True, True, prev_peak_time
     else:
-        # 아직 최고값 아래 → 대기
-        return prev_peak, True, False
+        # 아직 최고값 아래 → 대기, 고점 도달 시간 유지
+        return prev_peak, True, False, prev_peak_time
 
 
 # ─────────────────────────────────────────
@@ -190,15 +192,17 @@ def run_update(balance: Optional[list] = None, indicators_map: Optional[dict] = 
             prev_s2        = prev.get("turtle_s2_signal", False)
             prev_s1_peak   = prev.get("turtle_s1_peak_price")
             prev_s1_locked = prev.get("turtle_s1_peak_locked", False)
+            prev_s1_time   = prev.get("turtle_s1_peak_time")
             prev_s2_peak   = prev.get("turtle_s2_peak_price")
             prev_s2_locked = prev.get("turtle_s2_peak_locked", False)
+            prev_s2_time   = prev.get("turtle_s2_peak_time")
 
             # peak 상태 갱신 (눌림→재돌파 진입 조건 판단)
-            s1_peak, s1_locked, s1_ready = _update_peak_state(
-                prev_s1, new_s1, prev_s1_peak, prev_s1_locked, current_price
+            s1_peak, s1_locked, s1_ready, s1_time = _update_peak_state(
+                prev_s1, new_s1, prev_s1_peak, prev_s1_locked, current_price, prev_s1_time, now_kst
             )
-            s2_peak, s2_locked, s2_ready = _update_peak_state(
-                prev_s2, new_s2, prev_s2_peak, prev_s2_locked, current_price
+            s2_peak, s2_locked, s2_ready, s2_time = _update_peak_state(
+                prev_s2, new_s2, prev_s2_peak, prev_s2_locked, current_price, prev_s2_time, now_kst
             )
 
             unheld_record[ticker] = {
@@ -207,9 +211,11 @@ def run_update(balance: Optional[list] = None, indicators_map: Optional[dict] = 
                 "turtle_s1_peak_price":  s1_peak,
                 "turtle_s1_peak_locked": s1_locked,
                 "turtle_s1_entry_ready": s1_ready,
+                "turtle_s1_peak_time":   s1_time,
                 "turtle_s2_peak_price":  s2_peak,
                 "turtle_s2_peak_locked": s2_locked,
                 "turtle_s2_entry_ready": s2_ready,
+                "turtle_s2_peak_time":   s2_time,
                 "last_updated":           now_kst,
             }
 

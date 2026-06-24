@@ -8,9 +8,10 @@
 #
 # 두 가지 청산 조건:
 #
-#   [1] 하드 손절 (2N Stop — 최우선 처리)
-#       현재가 ≤ stop_loss_price (매수 후 최고가 - 2 × ATR, 트레일링)
-#       → 추세 예측 실패 → 즉시 전량 매도
+#   [1] 하드 손절 (고정 2N Stop — 최우선 처리)
+#       현재가 ≤ stop_loss_price (마지막 매수가 - 2 × ATR)
+#       → 진입 또는 피라미딩(추가 매수) 시점에 계산되어 저장된 고정 손절가를 사용하며,
+#          장중에 가격이 상승하더라도 손절가를 추가로 상향하지 않는다.
 #
 #   [2] 트레일링 스탑 (익절)
 #       ① 10일 신저가 경신 → 무조건 청산
@@ -426,24 +427,7 @@ def run_guardian(balance: Optional[list] = None, indicators_map: Optional[dict] 
             print(f"[risk_guardian] {ticker} 지표 계산 오류: {e}")
             indicators = {}
 
-        # 매수 후 최고가 갱신 + 트레일링 2N 손절가 계산 (단방향 상향)
-        atr_n = indicators.get("atr", 0.0)
-        high_since_entry = pos.get("high_price_since_entry") or pos.get("last_buy_price", 0.0)
-        _updated = False
 
-        if high_since_entry > 0.0 and current_price > high_since_entry:
-            position_state[ticker]["high_price_since_entry"] = current_price
-            high_since_entry = current_price
-            _updated = True
-
-        if atr_n > 0.0 and high_since_entry > 0.0:
-            trailing_stop = high_since_entry - 2.0 * atr_n
-            if trailing_stop > pos.get("stop_loss_price", 0.0):
-                position_state[ticker]["stop_loss_price"] = trailing_stop
-                _updated = True
-
-        if _updated:
-            pos = position_state[ticker]  # 갱신된 값 참조
 
         # 3가지 매도 기준 가격 후보 수집 (가격이 위에 있을수록 먼저 발동)
         avg_buy_price   = pos.get("avg_buy_price", 0)

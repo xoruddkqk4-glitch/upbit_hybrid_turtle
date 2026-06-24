@@ -99,7 +99,7 @@ def run_timer_check() -> list:
             print(f"[timer_agent] {ticker} 감시 코인 외 → 스킵")
             continue
 
-        current_priority = signal_priority.get(ticker, (99, None))[0]
+        current_priority = signal_priority.get(ticker, (99, None, None))[0]
 
         # S1 신호 + 눌림→재돌파 확인
         if data.get("turtle_s1_signal", False):
@@ -107,7 +107,7 @@ def run_timer_check() -> list:
                 if 1 < current_priority:
                     name = watchlist.get(ticker, {}).get("name", ticker)
                     print(f"[timer_agent] {name}({ticker}) ✅ 터틀 S1 진입 신호 (20일 신고가 눌림→재돌파)")
-                    signal_priority[ticker] = (1, "TURTLE_S1")
+                    signal_priority[ticker] = (1, "TURTLE_S1", data.get("turtle_s1_peak_time"))
                     current_priority = 1
 
         # S2 신호 + 눌림→재돌파 확인 (최우선)
@@ -116,11 +116,11 @@ def run_timer_check() -> list:
                 if 0 < current_priority:
                     name = watchlist.get(ticker, {}).get("name", ticker)
                     print(f"[timer_agent] {name}({ticker}) ✅ 터틀 S2 진입 신호 (55일 신고가 눌림→재돌파)")
-                    signal_priority[ticker] = (0, "TURTLE_S2")
+                    signal_priority[ticker] = (0, "TURTLE_S2", data.get("turtle_s2_peak_time"))
 
     entry_signals = [
-        {"ticker": ticker, "entry_source": src}
-        for ticker, (_, src) in signal_priority.items()
+        {"ticker": ticker, "entry_source": src, "peak_time": peak_time}
+        for ticker, (_, src, peak_time) in signal_priority.items()
         if src is not None
     ]
 

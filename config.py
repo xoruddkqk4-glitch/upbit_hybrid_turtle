@@ -39,10 +39,14 @@ LOVELY_COIN_LIST: dict = {
     "KRW-ETH":   {"name": "이더리움",    "market": "KRW"},
     "KRW-HBAR":   {"name": "헤데라",    "market": "KRW"},
     "KRW-LINK":   {"name": "체인링크",    "market": "KRW"},
-    "KRW-SOL":   {"name": "솔라나",      "market": "KRW"},
-    "KRW-SUI":   {"name": "수이",      "market": "KRW"},
-    "KRW-XLM":   {"name": "스텔라루멘",  "market": "KRW"},
-    "KRW-XRP":   {"name": "리플",        "market": "KRW"},
+    "KRW-SOL":   {"name": "솔라나",    "market": "KRW"},
+    "KRW-SUI":   {"name": "수이",    "market": "KRW"},
+    "KRW-XLM":   {"name": "스텔라루멘",    "market": "KRW"},
+    "KRW-XRP":   {"name": "리플",    "market": "KRW"},
+    "KRW-WLD":   {"name": "월드코인",    "market": "KRW"},
+    "KRW-ID":   {"name": "스페이스아이디",    "market": "KRW"},
+    "KRW-NEAR":   {"name": "니어프로토콜",    "market": "KRW"},
+    "KRW-TRUMP":   {"name": "오피셜트럼프",    "market": "KRW"},
     "KRW-TRX":   {"name": "트론",        "market": "KRW"}
 }
 

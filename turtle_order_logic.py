@@ -204,6 +204,7 @@ def place_entry_order(
     price: float, atr_n: float, max_unit: int,
     entry_source:          str   = "TARGET_30MIN",
     effective_risk_factor: float = RISK_PER_TRADE,
+    peak_time:             Optional[str] = None,
 ):
     """1차 진입 주문을 실행하고 포지션 상태를 기록한다.
 
@@ -288,12 +289,40 @@ def place_entry_order(
         "TURTLE_S2": "터틀S2(55일신고가) 눌림→재돌파",
         "TURTLE_S1": "터틀S1(20일신고가) 눌림→재돌파",
     }.get(entry_source, entry_source)
+
+    # 최고점 재돌파 소요 시간 계산
+    duration_str = ""
+    if peak_time:
+        try:
+            from datetime import datetime
+            import pytz
+            KST = pytz.timezone("Asia/Seoul")
+            peak_dt = datetime.strptime(peak_time, "%Y-%m-%d %H:%M:%S")
+            now_dt = datetime.now(KST).replace(tzinfo=None)
+            diff = now_dt - peak_dt
+            seconds = int(diff.total_seconds())
+            if seconds < 0:
+                seconds = 0
+            hours = seconds // 3600
+            minutes = (seconds % 3600) // 60
+            secs = seconds % 60
+            if hours > 0:
+                duration_str = f"{hours}시간 {minutes}분 {secs}초"
+            elif minutes > 0:
+                duration_str = f"{minutes}분 {secs}초"
+            else:
+                duration_str = f"{secs}초"
+        except Exception as e:
+            print(f"[turtle] 경과 시간 계산 오류: {e}")
+
+    time_taken_str = f"\n재돌파 소요시간: {duration_str}" if duration_str else ""
+
     telegram_alert.SendMessage(
         f"✅ 터틀 진입 [{risk_label}]\n"
         f"코인: {name}({ticker})\n"
         f"수량: {executed_volume:.8f}개 @{executed_price:,.0f}원\n"
         f"투입금액: {krw_amount:,.0f}원\n"
-        f"진입 경로: {source_label} (최대 {max_unit} Unit)\n"
+        f"진입 경로: {source_label} (최대 {max_unit} Unit){time_taken_str}\n"
         f"손절가: {stop_loss_price:,.0f}원 | 다음 피라미딩: {next_pyramid_price:,.0f}원"
     )
     return True  # 주문 성공
@@ -454,6 +483,7 @@ def run_orders(
     for signal in entry_signals:
         ticker       = signal["ticker"]
         entry_source = signal["entry_source"]
+        peak_time    = signal.get("peak_time")
 
         if ticker not in watchlist:
             print(f"[turtle] {ticker} 감시 코인 외 → 진입 스킵")
@@ -505,6 +535,7 @@ def run_orders(
         success = place_entry_order(
             ticker, volume, krw_amount, current_price, atr_n,
             MAX_UNIT_PER_COIN, entry_source, effective_risk_factor,
+            peak_time=peak_time,
         )
         # 주문이 성공한 경우에만 가용 KRW 차감 (실패 시 차감하면 다음 코인 진입 기회를 잃음)
         if success:

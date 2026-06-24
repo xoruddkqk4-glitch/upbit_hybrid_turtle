@@ -285,4 +285,6 @@ python -c "import risk_guardian; risk_guardian.run_guardian()"
 > 추가 업데이트: 5MA 익절 조건을 **실시간 현재가 < 5MA** → **어제 확정 일봉 종가(`prev_close`) < 어제까지 5MA(`ma5_prev`)** 기준으로 변경. 장중 휴쓰 방지를 위해 해당 조건은 09:00 이후 그날 첫 실행(09:06)에만 하루 1회 평가 (`ma5_check_record.json` 가드). `indicator_calc.py` 에 `ma5_prev`·`prev_close` 지표 추가, `atr_cache.json` 캐싱에도 반영. 수익권 판단(현재가 > 평균매입가)은 실시간 현재가 유지. 10일 신저가·2N 하드손절은 기존처럼 매 실행 실시간 감시.
 >
 > 신규 기능 추가: 평균 매입가 대비 **5% 상승 시 보유 수량의 25%**, **10% 상승 시 남은 수량의 33% 분할 익절** 조건 추가. 갭상승 등으로 5% 익절을 거치지 않고 바로 10% 이상이 되는 경우에도 10% 조건인 33%만 익절 매도하고 두 조건 모두 `True` 설정(포지션당 최대 1회씩만 동작). `risk_guardian.py`, `turtle_order_logic.py`, `balance_sync.py`, `trade_ledger.py` 에 반영 완료.
+>
+> 2N 손절 복구: 2N 하드 손절(`stop_loss_price`)을 실시간 트레일링 방식에서 오리지널 터틀 방식(진입 및 피라미딩 매수가 기준 고정 손절)으로 복구. `risk_guardian.py`에서 장중 최고가 기반 손절가 상향 갱신 로직 제거.
 
