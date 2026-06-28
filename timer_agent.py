@@ -29,40 +29,22 @@ from target_manager import load_unheld_record
 # ─────────────────────────────────────────
 
 def check_pullback_rebreak(ticker: str, signal_key: str, data: dict) -> bool:
-    """눌림→재돌파 진입 조건이 충족됐는지 확인한다.
+    """시간 가드 및 안착 진입 조건이 충족됐는지 확인한다."""
+    entry_ready    = data.get(f"turtle_{signal_key}_entry_ready", False)
+    breakout_price = data.get(f"turtle_{signal_key}_breakout_price")
+    signal         = data.get(f"turtle_{signal_key}_signal", False)
+    breakout_at    = data.get(f"turtle_{signal_key}_breakout_at")
+    name           = get_watchlist().get(ticker, {}).get("name", ticker)
+    label          = signal_key.upper()
 
-    target_manager 가 계산해서 저장한 entry_ready 플래그를 읽는다.
-    True 이면 "돌파 후 한 번 눌렸다가 최고값을 다시 돌파한 것"이 확인된 것이다.
-
-    Args:
-        ticker:     코인 티커 (예: KRW-BTC)
-        signal_key: "s1" 또는 "s2"
-        data:       unheld_coin_record 에서 읽은 코인 데이터
-
-    Returns:
-        True 면 진입 신호 발생.
-    """
-    entry_ready = data.get(f"turtle_{signal_key}_entry_ready", False)
-    peak_price  = data.get(f"turtle_{signal_key}_peak_price")
-    locked      = data.get(f"turtle_{signal_key}_peak_locked", False)
-    signal      = data.get(f"turtle_{signal_key}_signal", False)
-    name        = get_watchlist().get(ticker, {}).get("name", ticker)
-    label       = signal_key.upper()
-
-    if entry_ready and peak_price:
-        print(f"[timer_agent] {name}({ticker}) ✅ {label} 눌림→재돌파 진입 신호! "
-              f"(최고값 {peak_price:,.0f}원 재돌파)")
+    if entry_ready and breakout_price:
+        print(f"[timer_agent] {name}({ticker}) ✅ {label} 시간 가드 안착 성공! "
+              f"(돌파 기준선: {breakout_price:,.0f}원)")
         return True
 
-    # 상태별 대기 메시지 (디버깅용)
-    if signal and not locked:
-        peak_str = f"{peak_price:,.0f}원" if peak_price else "?"
-        print(f"[timer_agent] {name}({ticker}) ⏳ {label} WATCHING "
-              f"(최고값 추적 중: {peak_str})")
-    elif signal and locked:
-        peak_str = f"{peak_price:,.0f}원" if peak_price else "?"
-        print(f"[timer_agent] {name}({ticker}) ⏳ {label} PULLBACK "
-              f"(최고값 {peak_str} 재돌파 대기 중)")
+    # 상태 대기 메시지
+    if signal and breakout_at:
+        print(f"[timer_agent] {name}({ticker}) ⏳ {label} 시간 가드 대기 중 (돌파시각: {breakout_at})")
 
     return False
 
@@ -101,22 +83,22 @@ def run_timer_check() -> list:
 
         current_priority = signal_priority.get(ticker, (99, None, None))[0]
 
-        # S1 신호 + 눌림→재돌파 확인
+        # S1 신호 + 시간 가드 안착 확인
         if data.get("turtle_s1_signal", False):
             if check_pullback_rebreak(ticker, "s1", data):
                 if 1 < current_priority:
                     name = watchlist.get(ticker, {}).get("name", ticker)
-                    print(f"[timer_agent] {name}({ticker}) ✅ 터틀 S1 진입 신호 (20일 신고가 눌림→재돌파)")
-                    signal_priority[ticker] = (1, "TURTLE_S1", data.get("turtle_s1_peak_time"))
+                    print(f"[timer_agent] {name}({ticker}) ✅ 터틀 S1 진입 신호 (20일 신고가 시간 가드 통과)")
+                    signal_priority[ticker] = (1, "TURTLE_S1", data.get("turtle_s1_breakout_at"))
                     current_priority = 1
 
-        # S2 신호 + 눌림→재돌파 확인 (최우선)
+        # S2 신호 + 시간 가드 안착 확인 (최우선)
         if data.get("turtle_s2_signal", False):
             if check_pullback_rebreak(ticker, "s2", data):
                 if 0 < current_priority:
                     name = watchlist.get(ticker, {}).get("name", ticker)
-                    print(f"[timer_agent] {name}({ticker}) ✅ 터틀 S2 진입 신호 (55일 신고가 눌림→재돌파)")
-                    signal_priority[ticker] = (0, "TURTLE_S2", data.get("turtle_s2_peak_time"))
+                    print(f"[timer_agent] {name}({ticker}) ✅ 터틀 S2 진입 신호 (55일 신고가 시간 가드 통과)")
+                    signal_priority[ticker] = (0, "TURTLE_S2", data.get("turtle_s2_breakout_at"))
 
     entry_signals = [
         {"ticker": ticker, "entry_source": src, "peak_time": peak_time}
