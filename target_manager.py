@@ -285,6 +285,31 @@ def run_update(balance: Optional[list] = None, indicators_map: Optional[dict] = 
             _update_guard_status(pos, "turtle_s1", current_price, atr_val, 3600, now_kst, name)
             _update_guard_status(pos, "turtle_s2", current_price, atr_val, 3600, now_kst, name)
 
+            # 콘솔 감시 로그 추가 (현재가 / S1돌파값 / S2돌파값 및 가드 진행률)
+            s1_tgt = pos.get("turtle_s1_target_price", s1_high)
+            s2_tgt = pos.get("turtle_s2_target_price", s2_high)
+            
+            def _get_status_desc(prefix):
+                sig = pos.get(f"{prefix}_signal", False)
+                ready = pos.get(f"{prefix}_entry_ready", False)
+                if ready:
+                    return "안착"
+                if sig:
+                    b_at = pos.get(f"{prefix}_breakout_at")
+                    try:
+                        elapsed = (datetime.strptime(now_kst, "%Y-%m-%d %H:%M:%S") - 
+                                   datetime.strptime(b_at, "%Y-%m-%d %H:%M:%S")).total_seconds()
+                        return f"가드중({elapsed/60:.1f}분)"
+                    except Exception:
+                        return "가드중"
+                return "대기"
+
+            s1_status = _get_status_desc("turtle_s1")
+            s2_status = _get_status_desc("turtle_s2")
+
+            print(f"[target_manager] {name}({ticker}) 현재가:{current_price:,.0f}원 | "
+                  f"S1목표:{s1_tgt:,.0f}원({s1_status}) | S2목표:{s2_tgt:,.0f}원({s2_status})")
+
         # ⑥ 보유 중인 코인은 unheld_record 에서 제거
         for ticker in list(unheld_record.keys()):
             if ticker in held_tickers:
