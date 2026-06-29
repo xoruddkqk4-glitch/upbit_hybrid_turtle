@@ -286,11 +286,11 @@ def place_entry_order(
 
     # 텔레그램 알림
     source_label = {
-        "TURTLE_S2": "터틀S2(55일신고가) 눌림→재돌파",
-        "TURTLE_S1": "터틀S1(20일신고가) 눌림→재돌파",
+        "TURTLE_S2": "터틀S2(55일신고가) 시간 가드 안착",
+        "TURTLE_S1": "터틀S1(20일신고가) 시간 가드 안착",
     }.get(entry_source, entry_source)
 
-    # 최고점 재돌파 소요 시간 계산
+    # 가드 경과 시간 계산
     duration_str = ""
     if peak_time:
         try:
@@ -315,7 +315,7 @@ def place_entry_order(
         except Exception as e:
             print(f"[turtle] 경과 시간 계산 오류: {e}")
 
-    time_taken_str = f"\n재돌파 소요시간: {duration_str}" if duration_str else ""
+    time_taken_str = f"\n가드 경과시간: {duration_str}" if duration_str else ""
 
     telegram_alert.SendMessage(
         f"✅ 터틀 진입 [{risk_label}]\n"
